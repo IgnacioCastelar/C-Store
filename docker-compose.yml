@@ -1,0 +1,81 @@
+version: "3.8"
+
+services:
+  # --- MASTER (CEREBRO) ---
+  cstore-master:
+    container_name: cstore-master
+    build: .
+    image: cstore-image
+    command: master MASTERPLANIPRIO.config
+    environment:
+      - PUERTO_ESCUCHA=4100
+      - LOG_LEVEL=INFO
+    ports:
+      - "4100:4100" # Metadatos
+    networks:
+      - cstore-net
+    volumes:
+      - ./master/config:/c-store/master/config
+      - ./master/metadata:/c-store/master/metadata
+
+  # --- STORAGE (PERSISTENCIA) ---
+  cstore-storage:
+    container_name: cstore-storage
+    image: cstore-image
+    command: storage STORAGEPRIO.config
+    depends_on:
+      - cstore-master
+    environment:
+      - PUERTO_ESCUCHA=4000
+      - PUNTO_MONTAJE=/c-store/storage_data
+    ports:
+      - "4002:4000" # Puerto mapeado al host (interno 4000)
+    networks:
+      - cstore-net
+    volumes:
+      - ./storage/config:/c-store/storage/config
+      - ./storage_data:/c-store/storage_data
+
+  # --- WORKER 1 (PROCESAMIENTO) ---
+  worker-1:
+    container_name: worker-1
+    image: cstore-image
+    command: worker WORKERMEMORIA.config 1
+    depends_on:
+      - cstore-master
+      - cstore-storage
+    environment:
+      - WORKER_IP=worker-1
+      - IP_MASTER=cstore-master
+      - PUERTO_MASTER=4100
+      - IP_STORAGE=cstore-storage
+      - PUERTO_STORAGE=4000
+      - PUERTO_ESCUCHA=5000
+    networks:
+      - cstore-net
+    volumes:
+      - ./worker/config:/c-store/worker/config
+
+  # --- WORKER 2 (PROCESAMIENTO) ---
+  worker-2:
+    container_name: worker-2
+    image: cstore-image
+    command: worker WORKERMEMORIA.config 2
+    depends_on:
+      - cstore-master
+      - cstore-storage
+    environment:
+      - WORKER_IP=worker-2
+      - IP_MASTER=cstore-master
+      - PUERTO_MASTER=4100
+      - IP_STORAGE=cstore-storage
+      - PUERTO_STORAGE=4000
+      - PUERTO_ESCUCHA=5001
+    networks:
+      - cstore-net
+    volumes:
+      - ./worker/config:/c-store/worker/config
+
+networks:
+  cstore-net:
+    driver: bridge

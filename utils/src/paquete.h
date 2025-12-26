@@ -35,7 +35,8 @@ typedef enum {
     OP_EXEC_QUERY,
     OP_DESALOJO_QUERY,
     OP_RESPUESTA_DESALOJO,
-    OP_RESULTADO_LECTURA
+    OP_RESULTADO_LECTURA,
+    OP_ERROR // <--- FIX: Agregado para manejo de fallos
 } op_code;
 
 typedef struct

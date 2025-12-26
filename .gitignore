@@ -1,0 +1,105 @@
+# --- C Build Artifacts ---
+*.o
+*.obj
+*.a
+*.out
+*.exe
+
+# --- Executables (Binarios compilados) ---
+# Asumiendo que los makefiles los generan en la raíz de cada módulo o en bin/
+master/master
+worker/worker
+storage/storage
+gateway/gateway
+# Ignorar carpetas bin pero mantener el directorio
+**/bin/*
+!**/bin/.gitkeep
+
+# --- Debug & Logs ---
+*.log
+*.txt
+valgrind-out.txt
+*.dSYM/
+debug/
+
+# --- Config & Metadata (Runtime) ---
+# Ignorar archivos de metadatos generados al correr
+*.dat
+*.bin
+files.bin
+metadata.dat
+blocks.dat
+
+# --- Docker Persistence (CRÍTICO) ---
+# No queremos subir los bloques físicos ni la metadata real a GitHub
+deploy/storage/data/*
+!deploy/storage/data/.gitkeep
+deploy/master/metadata/*
+!deploy/master/metadata/.gitkeep
+deploy/config/*.config
+# (Opcional: si quieres ignorar configs locales de prueba, descomenta arriba)
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# --- Python (Para el futuro Gateway) ---
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+
+
+# Eclipse files
+.metadata/
+
+# Prerequisites
+*.d
+
+# Object files
+*.ko
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
