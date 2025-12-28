@@ -37,6 +37,8 @@ void* op_leer_bloque(const char* file, const char* tag, uint32_t bloque_logico, 
 int op_commit_file_tag(const char* file, const char* tag, int query_id);
 int op_eliminar_tag(const char* file, const char* tag, int query_id);
 int op_crear_tag(const char* file_origen, const char* tag_origen, const char* file_destino, const char* tag_destino, int query_id);
+int op_verificar_bloque_md5(const char* md5_hex, int query_id);
+int op_escribir_bloque_md5_safe(const char* md5_hex, void* contenido, int tam_contenido, int query_id);
 
 // --- Funciones de Administración del FS (Movidas desde main) ---
 void consulta_fresh();

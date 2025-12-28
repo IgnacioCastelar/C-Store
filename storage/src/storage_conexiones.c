@@ -324,6 +324,57 @@ static void *atender_worker_storage(void *args) {
              send(socket, &respuesta, sizeof(int), 0);
              break;
 
+        case OP_CHECK_MD5:
+            // Payload: [MD5 (32 bytes)]
+            if (paquete->buffer->size >= 32) {
+                char md5_hex[33]; // +1 para \0
+                memcpy(md5_hex, stream, 32);
+                md5_hex[32] = '\0'; // Null-terminate para manejo seguro de strings
+
+                int existe = op_verificar_bloque_md5(md5_hex, query_id);
+                
+                // Respuesta según Protocolo
+                op_code respuesta_code = (existe == 1) ? OP_BLOCK_EXIST : OP_BLOCK_MISSING;
+                
+                // Enviamos paquete vacío solo con el OpCode de respuesta
+                t_paquete* resp_md5 = crear_paquete(respuesta_code);
+                // (Opcional: Agregar payload si el protocolo futuro lo requiere)
+                enviar_paquete(resp_md5, socket);
+                destruir_paquete(resp_md5);
+                
+            } else {
+                log_error(logger, "##%d - CHECK_MD5: Payload incorrecto (size < 32)", query_id);
+                // Enviar Error
+            }
+            break;
+
+        case OP_WRITE_BLOCK:
+            // Payload: [MD5 (32 bytes)] + [DATA (block_size)]
+            if (paquete->buffer->size >= 32) {
+                char md5_write[33];
+                memcpy(md5_write, stream, 32);
+                md5_write[32] = '\0';
+                stream += 32;
+
+                // El resto del stream es la DATA
+                int data_size = paquete->buffer->size - 32; // Ajuste dinámico o usar block_size_global
+                
+                if (op_escribir_bloque_md5_safe(md5_write, stream, data_size, query_id) == 0) {
+                    // Éxito (o ya existía)
+                    t_paquete* resp_ok = crear_paquete(OP_OK);
+                    enviar_paquete(resp_ok, socket);
+                    destruir_paquete(resp_ok);
+                } else {
+                    // Fallo (Disco lleno, etc)
+                    t_paquete* resp_err = crear_paquete(OP_ERROR);
+                    enviar_paquete(resp_err, socket);
+                    destruir_paquete(resp_err);
+                }
+            } else {
+                log_error(logger, "##%d - WRITE_BLOCK: Payload insuficiente", query_id);
+            }
+            break;
+
         default:
             log_warning(logger, "Operación desconocida: %d", paquete->codigo_operacion);
             break;

@@ -235,10 +235,11 @@ log_info(logger, "---------------------------------------------");
         // Cargar config para saber tamaño de bloque y crear bitmap
         char *ruta_sb = string_from_format("%s/superblock.config", punto_montaje);
         t_config *sb = config_create(ruta_sb);
-        if(!sb) { free(ruta_sb); return; }
         if(!sb) {
-             log_error(logger, "No se encuentra superblock.config para iniciar FS existente.");
+             log_error(logger, "¡ERROR FATAL! No existe superblock.config y FRESH_START=FALSE.");
+             log_error(logger, "El sistema no puede iniciar sin un FS previo. Cambie a FRESH_START=TRUE.");
              free(ruta_sb);
+             // Opcional: exit(EXIT_FAILURE); para detener el Storage aquí mismo
              return;
         }
 
@@ -1157,4 +1158,105 @@ int op_crear_tag(const char* file_origen, const char* tag_origen,
     log_info(logger, "##%d - Tag creado %s:%s", query_id, file_destino, tag_destino);
     return 0;
 
+}
+
+// T-005: Verificación rápida en Memoria (RAM)
+int op_verificar_bloque_md5(const char* md5_hex, int query_id) {
+    if (!md5_hex) return -1;
+
+    // Solo consultamos el índice en memoria protegiendo la lectura
+    pthread_mutex_lock(&mutex_blocks_hash);
+    bool existe = dictionary_has_key(blocks_hash_index, (char*)md5_hex);
+    pthread_mutex_unlock(&mutex_blocks_hash);
+
+    if (existe) {
+        log_info(logger, "##%d - Check MD5: %s -> EXISTE", query_id, md5_hex);
+        return 1; // Existe
+    } else {
+        log_info(logger, "##%d - Check MD5: %s -> NO EXISTE", query_id, md5_hex);
+        return 0; // No existe
+    }
+}
+
+// T-006: Escritura Segura e Idempotente (CAS)
+int op_escribir_bloque_md5_safe(const char* md5_hex, void* contenido, int tam_contenido, int query_id) {
+    
+    // 1. Lock Global de Indexación (Critical Section: Entry Check)
+    pthread_mutex_lock(&mutex_blocks_hash);
+    
+    // 2. Doble Verificación (Double-Check Locking pattern)
+    // Puede que otro hilo haya escrito este bloque justo mientras esperábamos el mutex.
+    if (dictionary_has_key(blocks_hash_index, (char*)md5_hex)) {
+        log_warning(logger, "##%d - Race Condition Evitada: El bloque %s ya fue escrito por otro hilo.", query_id, md5_hex);
+        pthread_mutex_unlock(&mutex_blocks_hash);
+        return 0; // Éxito (Idempotente)
+    }
+
+    // 3. Si no existe, procedemos a persistir.
+    // Mantenemos el lock de hash para evitar que otro intente escribir el mismo hash ahora.
+
+    // A. Buscar bloque libre (Bitmap Lock)
+    pthread_mutex_lock(&mutex_bitmap);
+    int nuevo_bloque = bitmap_buscar_libre(bitmap_global);
+    if (nuevo_bloque != -1) {
+        bitmap_ocupar(bitmap_global, nuevo_bloque);
+    }
+    pthread_mutex_unlock(&mutex_bitmap);
+
+    if (nuevo_bloque == -1) {
+        log_error(logger, "##%d - Error: Disco Lleno al intentar escribir bloque MD5", query_id);
+        pthread_mutex_unlock(&mutex_blocks_hash); // Liberamos lock principal
+        return -1; // Fallo: Storage Full
+    }
+
+    // B. Escritura Física (I/O Pesado)
+    // Nota: Podríamos liberar el lock de hash aquí si quisiéramos paralelismo máximo en I/O,
+    // pero para garantizar consistencia estricta en V1, lo mantenemos hasta actualizar el índice.
+    
+    char* ruta_bloque = string_from_format("%s/physical_blocks/block%04d.dat", punto_montaje_global, nuevo_bloque);
+    FILE* f = fopen(ruta_bloque, "w+b");
+    
+    if (f) {
+        // Escribimos el contenido recibido (si es menor al block_size, rellenamos o escribimos justo? 
+        // CAS standard: Escribimos el bloque completo. El Worker manda block_size).
+        void* buffer_write = calloc(1, block_size_global);
+        memcpy(buffer_write, contenido, (tam_contenido > block_size_global) ? block_size_global : tam_contenido);
+        
+        fwrite(buffer_write, block_size_global, 1, f);
+        fclose(f);
+        free(buffer_write);
+
+        log_info(logger, "##%d - Bloque Físico Escrito - ID: %d - MD5: %s", query_id, nuevo_bloque, md5_hex);
+
+        // C. Actualizar Índice Hash (Memoria + Persistencia)
+        char* nombre_bloque = string_from_format("block%04d", nuevo_bloque);
+        
+        // Memoria
+        agregar_bloque_hash(blocks_hash_index, md5_hex, nombre_bloque);
+        
+        // Persistencia (Actualizar archivo .config)
+        // Nota: Esto podría optimizarse para no reescribir todo el archivo cada vez, 
+        // pero por ahora reutilizamos la función existente.
+        guardar_blocks_hash_index(punto_montaje_global, blocks_hash_index);
+
+        free(nombre_bloque);
+
+    } else {
+        log_error(logger, "##%d - Fallo escritura física en %s", query_id, ruta_bloque);
+        // Rollback bitmap? (Opcional, MVP V1 asumimos fatal error)
+        pthread_mutex_unlock(&mutex_blocks_hash);
+        free(ruta_bloque);
+        return -1;
+    }
+
+    free(ruta_bloque);
+
+    // 4. Fin Sección Crítica
+    pthread_mutex_unlock(&mutex_blocks_hash);
+    
+    // Retardo simulado (Configuración)
+    int retardo = config_get_int_value(config, "RETARDO_ACCESO_BLOQUE");
+    usleep(retardo * 1000);
+
+    return 0; // Éxito
 }
