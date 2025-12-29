@@ -22,6 +22,11 @@ int main(int argc, char* argv[]) {
         config_path = string_from_format("./config/%s", config_filename);
     }
 
+    // Esperamos 15 segundos para dar tiempo al Storage a formatear sus 4096 bloques
+    // Esto es vital en la primera ejecución (FRESH_START)
+    printf("DEBUG: Worker pausado 15 segundos esperando al Storage...\n");
+    sleep(15);
+
     t_worker* worker = worker_create(config_path, worker_id);
     
     if (!worker) {

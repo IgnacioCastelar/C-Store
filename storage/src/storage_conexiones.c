@@ -1,12 +1,15 @@
 #include "storage_conexiones.h"
 #include <pthread.h>
 #include <string.h>
+#include "operaciones.h" //DEBUG... UNA VEZ SOLUCIONADO SE VA
+#include <commons/config.h> //DEBUG... UNA VEZ SOLUCIONADO SE VA
 #include <stdint.h> // T-001: Necesario para uint8_t, uint32_t
 
 // Variables globales externas necesarias
 extern t_log* logger;
 extern t_config* config;
 extern int block_size_global; // Usado para el handshake y el buffer de lectura/escritura
+extern char* punto_montaje_global; //DEBUG, UNA VEZ SOLUCIONADO SE VA
 
 // contadores cant. workers
 static int cantidad_workers_conectados = 0;
@@ -87,6 +90,28 @@ static t_workerStorage *recibir_id_worker(int fd_cliente) {
     // Usamos block_size_global cargado desde Superbloque/Config
     int tam_block = block_size_global;
     
+    // --- SAFEGUARD: Validación de integridad de memoria ---
+    // Si por alguna razón la variable global se corrompió o no se inició,
+    // intentamos recuperarla del disco como último recurso.
+    if (tam_block == 0) {
+        log_warning(logger, "[Seguridad] BlockSize en memoria es 0. Recuperando desde disco...");
+        
+        char* path_sb = string_from_format("%s/superblock.config", punto_montaje_global);
+        t_config* sb = config_create(path_sb);
+        
+        if (sb) {
+            tam_block = config_get_int_value(sb, "BLOCK_SIZE");
+            block_size_global = tam_block; // Reparamos la memoria
+            log_info(logger, "[Seguridad] BlockSize recuperado exitosamente: %d", tam_block);
+            config_destroy(sb);
+        } else {
+            // Si falla aquí, sí es un error fatal real
+            log_error(logger, "[Fatal] No se pudo recuperar el BlockSize. Archivo no encontrado: %s", path_sb);
+        }
+        free(path_sb);
+    }
+    // -----------------------------------------------------
+
     if (tam_block == 0) {
         log_warning(logger, "CUIDADO: Enviando BlockSize=0 (¿Superbloque no cargado?)");
     }

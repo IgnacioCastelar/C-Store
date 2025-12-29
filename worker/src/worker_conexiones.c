@@ -82,32 +82,17 @@ int worker_conectar_storage(ConfigWorker* cfg, const char* worker_id, t_log* log
 
     int block_size = 0;
     int result_ok = 0;
-    int offset = 0;
-    int tam_campo = 0; // Variable temporal para leer el tamaño del campo
 
-    // 1. Leer tamaño del primer campo (debe ser 4)
-    if (resp->buffer->size >= offset + sizeof(int)) {
-        memcpy(&tam_campo, resp->buffer->stream + offset, sizeof(int));
-        offset += sizeof(int);
+    if (resp->buffer->size >= sizeof(int)) {
+        memcpy(&block_size, resp->buffer->stream, sizeof(int));
     }
 
-    // 2. Leer VALOR de block_size
-    if (resp->buffer->size >= offset + tam_campo) {
-        memcpy(&block_size, resp->buffer->stream + offset, tam_campo);
-        offset += tam_campo;
+    if (resp->buffer->size >= sizeof(int) * 2) {
+        memcpy(&result_ok, resp->buffer->stream + sizeof(int), sizeof(int));
     }
-
-    // 3. Leer tamaño del segundo campo
-    if (resp->buffer->size >= offset + sizeof(int)) {
-        memcpy(&tam_campo, resp->buffer->stream + offset, sizeof(int));
-        offset += sizeof(int);
-    }
-
-    // 4. Leer VALOR de result_ok
-    if (resp->buffer->size >= offset + tam_campo) {
-        memcpy(&result_ok, resp->buffer->stream + offset, tam_campo);
-        offset += tam_campo;
-    }
+    // ---------------------------------------------
+    // --- FIX DESERIALIZACIÓN (Lectura Directa) ---
+    // El payload es simplemente: [BLOCK_SIZE (4 bytes)] [RESULT (4 bytes)]
 
     destruir_paquete(resp);
 

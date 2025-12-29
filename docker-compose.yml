@@ -35,7 +35,7 @@ services:
       - cstore-net
     volumes:
       - ./storage/config:/c-store/storage/config
-      - ./storage_data:/c-store/storage_data
+      - cstore-data:/c-store/storage_data
 
   # --- WORKER 1 (PROCESAMIENTO) ---
   worker-1:
@@ -80,3 +80,6 @@ services:
 networks:
   cstore-net:
     driver: bridge
+
+volumes:
+  cstore-data:
