@@ -1,5 +1,8 @@
 include settings.mk
 
+# Tarea Agente 2: Librerías SSL/Crypto para cálculo MD5
+LIBS += ssl crypto
+
 ################################################################################
 
 outname = bin/$(1)

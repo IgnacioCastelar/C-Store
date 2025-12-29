@@ -14,4 +14,7 @@ int worker_conectar_storage(ConfigWorker* cfg, const char* worker_id, t_log* log
 
 void* worker_escuchar_master(void* arg);
 
+// --- NUEVO: Agregado para T-007 (Server de Datos) ---
+void* worker_servidor_datos(void* arg);
+
 #endif

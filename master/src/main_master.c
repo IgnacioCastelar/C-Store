@@ -1,11 +1,15 @@
 #include "main_master.h"
+#include <commons/string.h>
+#include <commons/collections/dictionary.h>
 
-// ... (Resto de variables globales igual)
+// Estructura para persistencia básica (Roadmap T-009)
+t_dictionary *indice_archivos;
 t_log *logger;
 t_config *config;
 int contador_workers_libres = 0;
 int contador_workers = 0;
 int tiempo_aging;
+int worker_rr_index = 0;
 
 // ... (liberar_y_salir igual)
 void liberar_y_salir(int s)
@@ -38,6 +42,9 @@ int main(int argc, char *argv[])
 
 	config = config_create(ruta_config);
 
+	indice_archivos = dictionary_create();
+	// TODO: Cargar metadata.dat si existe (Persistencia)
+
 	if (config == NULL) {
 		log_error(logger, "No se pudo encontrar el archivo de configuracion: %s", ruta_config);
 		log_destroy(logger); // Evitar leak si falla inicio
@@ -55,7 +62,7 @@ int main(int argc, char *argv[])
 		log_info(logger, "Planificador sin Aging (TIEMPO_AGING=0)");
 	}
 
-	int socket_server = iniciar_servidor(puerto);
+	int socket_server = iniciar_servidor(puerto, logger); // Pasamos la variable global logger del Master
 	int *socketParaHilo = malloc(sizeof(int));
 	*socketParaHilo = socket_server;
 
@@ -96,7 +103,7 @@ void *iniciar_conexiones(void *socket_server)
 	pthread_t hilo_cliente;
 	while (1)
 	{
-		int socket_cliente = esperar_cliente(socketServerDeHilo);
+		int socket_cliente = esperar_cliente(socketServerDeHilo, logger);
 		t_paquete *paquete_handshake = recibir_paquete(socket_cliente);
 
 		if (paquete_handshake == NULL) {
@@ -140,6 +147,83 @@ void *iniciar_conexiones(void *socket_server)
 			log_info(logger, "Se conectó un Query Control");
 			destruir_paquete(paquete_handshake);
 			break;
+
+		// Caso: OP_UPLOAD_REQ (0x10)
+		case OP_UPLOAD_REQ: {
+		    log_info(logger, "Petición de subida recibida del Gateway (Socket %d)", socket_cliente);
+
+		    // 1. Deserializar Nombre y Tamaño
+		    int despl = 0;
+		    char* nombre_archivo = deserializar_string(paquete_handshake->buffer->stream, &despl);
+		    uint32_t tam_archivo;
+		    memcpy(&tam_archivo, paquete_handshake->buffer->stream + despl, sizeof(uint32_t));
+
+		    // 2. Verificar duplicados (Idempotencia básica en memoria)
+		    // Nota: Asumimos que 'indice_archivos' fue inicializado en el main.
+		    if (dictionary_has_key(indice_archivos, nombre_archivo)) {
+		        log_error(logger, "Rechazando subida: El archivo '%s' ya existe.", nombre_archivo);
+		        // Enviar Error 101: ERR_FILE_EXISTS
+		        t_paquete* err = crear_paquete(OP_ERROR);
+		        // Podríamos agregar código de error en el payload si el protocolo lo define
+		        enviar_paquete(err, socket_cliente);
+		        destruir_paquete(err);
+		    } 
+		    else {
+		        // 3. Asignación de Worker (Algoritmo Round Robin)
+        		pthread_mutex_lock(&mutex_worker);
+        
+		        int cantidad_workers = list_size(workers_conectados);
+        
+        		if (cantidad_workers == 0) {
+		            log_error(logger, "Error crítico: No hay Workers conectados para atender la subida.");
+		            // Enviar Error 201: ERR_NO_WORKERS
+        		    pthread_mutex_unlock(&mutex_worker);
+            		t_paquete* err = crear_paquete(OP_ERROR); 
+            		enviar_paquete(err, socket_cliente);
+            		destruir_paquete(err);
+        		} else {
+            		// Aritmética Modular para Round Robin
+            		worker_rr_index = worker_rr_index % cantidad_workers;
+            
+		            t_worker_conectada* worker_elegido = list_get(workers_conectados, worker_rr_index);
+            
+        		    // Avanzamos el índice para la próxima petición
+            		worker_rr_index++;
+            
+            		pthread_mutex_unlock(&mutex_worker);
+
+            		log_info(logger, "Asignando Worker ID: %d para subir '%s' (Round Robin)", 
+                    		 worker_elegido->id_worker, nombre_archivo);
+
+            		// 4. Responder al Gateway (OP_UPLOAD_ACK)
+            		// Payload: [IP/Hostname Worker (String)] [Puerto Datos (Int)]
+            		t_paquete* ack = crear_paquete(OP_UPLOAD_ACK);
+            
+            		// FIXME: Asegúrate de que tu struct t_worker_conectada tenga el campo 'hostname' o 'ip' 
+            		// guardado desde el handshake. Si no, usa el ID o una lógica de mapeo.
+            		// Por ahora, asumimos que worker-X resuelve por DNS en Docker.
+            		char* ip_worker_str = string_from_format("worker-%d", worker_elegido->id_worker); 
+            		int puerto_datos = 5000; // Según config T-007
+
+		            int len_ip = strlen(ip_worker_str) + 1;
+        		    agregar_a_paquete(ack, &len_ip, sizeof(int));
+            		agregar_a_paquete(ack, ip_worker_str, len_ip);
+            		agregar_a_paquete(ack, &puerto_datos, sizeof(int));
+
+            		enviar_paquete(ack, socket_cliente);
+            		destruir_paquete(ack);
+            		free(ip_worker_str);
+            
+            		// Reservar nombre en índice (Estado: SUBIENDO)
+            		dictionary_put(indice_archivos, nombre_archivo, "SUBIENDO");
+        		}
+    		}
+
+    		free(nombre_archivo);
+    		destruir_paquete(paquete_handshake);
+    		close(socket_cliente); // Gateway es conexión corta aquí
+    		break;
+		}
 
 		default:
 			log_error(logger, "OpCode desconocido: %d", paquete_handshake->codigo_operacion);

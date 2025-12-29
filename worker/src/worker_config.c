@@ -19,6 +19,7 @@ ConfigWorker* worker_config_create(char* path, t_log* logger) {
     config->retardo_memoria = config_get_int_value(config_file, "RETARDO_MEMORIA");
     config->algoritmo_reemplazo = strdup(config_get_string_value(config_file, "ALGORITMO_REEMPLAZO"));
     config->path_scripts = strdup(config_get_string_value(config_file, "PATH_SCRIPTS"));
+    config->puerto_escucha_datos = config_get_int_value(config_file, "PUERTO_ESCUCHA_DATOS");
 
     config_destroy(config_file);
     return config;

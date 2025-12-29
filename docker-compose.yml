@@ -28,6 +28,7 @@ services:
     environment:
       - PUERTO_ESCUCHA=4000
       - PUNTO_MONTAJE=/c-store/storage_data
+      - FRESH_START=FALSE
     ports:
       - "4002:4000" # Puerto mapeado al host (interno 4000)
     networks:

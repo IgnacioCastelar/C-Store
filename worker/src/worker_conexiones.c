@@ -7,6 +7,25 @@
 #include <unistd.h>
 #include <string.h>
 #include <pthread.h>
+#include <openssl/md5.h>
+
+// --- Estructura Privada para pasar argumentos al hilo de Upload ---
+typedef struct {
+    t_worker* worker;
+    int socket_cliente;
+} t_args_upload;
+
+// --- Prototipos (Forward Declarations) para evitar errores de compilación ---
+void* atender_cliente_gateway(void* arg);
+void procesar_bloque_completo(t_worker* w, void* datos, uint32_t tamanio, t_list* lista_md5);
+
+// Helper interno para convertir raw bytes a Hex String (32 chars + null)
+void _binario_a_hex_string(unsigned char* digest, char* output) {
+    for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
+        sprintf(&output[i * 2], "%02x", (unsigned int)digest[i]);
+    }
+    output[32] = '\0'; // Null terminator de seguridad
+}
 
 // Función del Hilo de Ejecución
 void* _ejecutar_query_thread(void* arg) {
@@ -64,18 +83,38 @@ int worker_conectar_storage(ConfigWorker* cfg, const char* worker_id, t_log* log
     int block_size = 0;
     int result_ok = 0;
     int offset = 0;
+    int tam_campo = 0; // Variable temporal para leer el tamaño del campo
 
-    memcpy(&block_size, resp->buffer->stream + offset, sizeof(int));
-    offset += sizeof(int);
+    // 1. Leer tamaño del primer campo (debe ser 4)
+    if (resp->buffer->size >= offset + sizeof(int)) {
+        memcpy(&tam_campo, resp->buffer->stream + offset, sizeof(int));
+        offset += sizeof(int);
+    }
 
-    if (resp->buffer->size >= offset + sizeof(int))
-        memcpy(&result_ok, resp->buffer->stream + offset, sizeof(int));
+    // 2. Leer VALOR de block_size
+    if (resp->buffer->size >= offset + tam_campo) {
+        memcpy(&block_size, resp->buffer->stream + offset, tam_campo);
+        offset += tam_campo;
+    }
+
+    // 3. Leer tamaño del segundo campo
+    if (resp->buffer->size >= offset + sizeof(int)) {
+        memcpy(&tam_campo, resp->buffer->stream + offset, sizeof(int));
+        offset += sizeof(int);
+    }
+
+    // 4. Leer VALOR de result_ok
+    if (resp->buffer->size >= offset + tam_campo) {
+        memcpy(&result_ok, resp->buffer->stream + offset, tam_campo);
+        offset += tam_campo;
+    }
 
     destruir_paquete(resp);
 
     if (block_size <= 0) {
-        log_error(logger, "Storage envió un BLOCK_SIZE inválido (%d).", block_size);
-        return -1;
+        log_error(logger, "Storage envió un BLOCK_SIZE inválido (%d). ¿FS no formateado?", block_size);
+        // Retornamos error pero NO crasheamos, para ver logs
+        return -1; 
     }
 
     if (out_block_size) *out_block_size = block_size;
@@ -227,5 +266,180 @@ void* worker_escuchar_master(void* arg) {
         destruir_paquete(paquete);
     }
 
+    return NULL;
+}
+
+// Función auxiliar que encapsula la lógica MD5 + Storage
+void procesar_bloque_completo(t_worker* w, void* datos, uint32_t tamanio, t_list* lista_md5) {
+    
+    // 1. Calcular MD5 (Raw Bytes)
+    unsigned char digest[MD5_DIGEST_LENGTH]; // 16 bytes
+    
+    // SUPRESIÓN DE WARNINGS: MD5 está deprecado en OpenSSL 3.0, pero lo usamos igual.
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    MD5_CTX context;
+    MD5_Init(&context);
+    MD5_Update(&context, datos, tamanio);
+    MD5_Final(digest, &context);
+    #pragma GCC diagnostic pop
+
+    // 2. SEGURIDAD: Convertir a Hex String (32 bytes)
+    char* hash_hex_string = malloc(33); // 32 chars + \0
+    _binario_a_hex_string(digest, hash_hex_string);
+    
+    // Agregamos a la lista local para reporte final
+    list_add(lista_md5, strdup(hash_hex_string)); // Guardamos copia
+
+    log_info(w->logger, "Bloque procesado. MD5 Hex: %s", hash_hex_string);
+
+    // 3. Consultar al Storage (OP_CHECK_MD5)
+    t_paquete* check = crear_paquete(OP_CHECK_MD5);
+    uint32_t len_hash = 33; // Enviamos el null terminator por seguridad o manejamos 32 fijos
+    agregar_a_paquete(check, &len_hash, sizeof(uint32_t));
+    agregar_a_paquete(check, hash_hex_string, len_hash);
+    
+    // Enviamos request (usando conexión persistente fd_storage)
+    pthread_mutex_lock(&w->archivos_mutex); // Proteger socket storage si es compartido
+    enviar_paquete(check, w->fd_storage);
+    destruir_paquete(check);
+
+    // 4. Esperar respuesta del Storage
+    t_paquete* resp = recibir_paquete(w->fd_storage);
+    
+    // FIX: Verificar si resp es NULL (posible desconexión del storage)
+    if (resp) {
+        if (resp->codigo_operacion == OP_BLOCK_MISSING) {
+            log_info(w->logger, "Bloque nuevo detectado. Enviando contenido al Storage...");
+            
+            // 5. Escribir Bloque (OP_WRITE_BLOCK)
+            // Payload: [Len Hash][Hash Hex][Len Data][Data]
+            t_paquete* write = crear_paquete(OP_WRITE_BLOCK);
+            
+            agregar_a_paquete(write, &len_hash, sizeof(uint32_t));
+            agregar_a_paquete(write, hash_hex_string, len_hash);
+            
+            agregar_a_paquete(write, &tamanio, sizeof(uint32_t));
+            agregar_a_paquete(write, datos, tamanio);
+            
+            enviar_paquete(write, w->fd_storage);
+            
+            // Esperar OK de escritura para sincronismo
+            t_paquete* ack = recibir_paquete(w->fd_storage); 
+            if(ack) destruir_paquete(ack);
+            
+            destruir_paquete(write);
+        } else {
+            log_info(w->logger, "Bloque existente (Deduplicado). Ahorrando escritura.");
+        }
+        destruir_paquete(resp);
+    } else {
+        log_error(w->logger, "Error crítico: El Storage no respondió al Check MD5.");
+    }
+    
+    pthread_mutex_unlock(&w->archivos_mutex);
+    free(hash_hex_string);
+}
+
+void* worker_servidor_datos(void* arg) {
+    t_worker* w = (t_worker*)arg;
+    // FIX T-007: Pasamos w->logger explícitamente
+    int socket_servidor = iniciar_servidor(w->config->puerto_escucha_datos, w->logger);
+    
+    if (socket_servidor == -1) {
+        log_error(w->logger, "Error fatal: No se pudo iniciar el servidor de datos.");
+        return NULL;
+    }
+
+    log_info(w->logger, "Servidor de Datos escuchando en puerto %d", w->config->puerto_escucha_datos);
+
+    while(1) {
+        int socket_cliente = esperar_cliente(socket_servidor, w->logger);
+        if (socket_cliente < 0) continue;
+
+        log_info(w->logger, "Conexión entrante de Gateway (Socket %d)", socket_cliente);
+
+        // Usamos la estructura correcta: t_args_upload
+        t_args_upload* args = malloc(sizeof(t_args_upload));
+        args->worker = w;
+        args->socket_cliente = socket_cliente; 
+        
+        pthread_t hilo_upload;
+        pthread_create(&hilo_upload, NULL, atender_cliente_gateway, (void*)args); 
+        pthread_detach(hilo_upload);
+    }
+}
+
+void* atender_cliente_gateway(void* arg) {
+    // Recuperar argumentos correctamente casteados
+    t_args_upload* args = (t_args_upload*)arg;
+    t_worker* w = args->worker;
+    int socket_gateway = args->socket_cliente;
+
+    // Buffer acumulador para llegar al BLOCK_SIZE
+    void* buffer_bloque = malloc(w->block_size);
+    uint32_t bytes_acumulados = 0;
+    
+    // Lista para guardar los MD5s ordenados de este archivo
+    t_list* lista_bloques_md5 = list_create();
+
+    log_info(w->logger, "Iniciando stream de datos con Gateway...");
+
+    while (1) {
+        t_paquete* paq = recibir_paquete(socket_gateway);
+        if (!paq) {
+            log_error(w->logger, "Gateway se desconectó inesperadamente.");
+            break;
+        }
+
+        if (paq->codigo_operacion == OP_STREAM_DATA) {
+            // Lógica de buffering: El Gateway puede mandar chunks de cualquier tamaño
+            void* stream_chunk = paq->buffer->stream;
+            uint32_t stream_size = paq->buffer->size; // Tamaño del chunk recibido
+            uint32_t procesado = 0;
+
+            while (procesado < stream_size) {
+                // Cuánto espacio me queda en el bloque actual
+                uint32_t espacio_libre = w->block_size - bytes_acumulados;
+                // Cuánto voy a copiar ahora
+                uint32_t a_copiar = (stream_size - procesado < espacio_libre) ? (stream_size - procesado) : espacio_libre;
+
+                memcpy(buffer_bloque + bytes_acumulados, stream_chunk + procesado, a_copiar);
+                bytes_acumulados += a_copiar;
+                procesado += a_copiar;
+
+                // Si llenamos el bloque, procesamos
+                if (bytes_acumulados == w->block_size) {
+                    procesar_bloque_completo(w, buffer_bloque, w->block_size, lista_bloques_md5);
+                    bytes_acumulados = 0; // Reset para el siguiente bloque
+                }
+            }
+        } 
+        else if (paq->codigo_operacion == OP_STREAM_FINISH) {
+            log_info(w->logger, "Stream finalizado. Procesando remanente...");
+            // Si quedó algo en el buffer (último bloque incompleto), lo procesamos igual
+            if (bytes_acumulados > 0) {
+                 procesar_bloque_completo(w, buffer_bloque, bytes_acumulados, lista_bloques_md5);
+            }
+            
+            // TODO: Notificar al Master el éxito (OP_UPLOAD_SUCCESS) con la lista de MD5s
+            // enviar_confirmacion_master(w, lista_bloques_md5);
+
+            // Responder OK al Gateway
+            t_paquete* ok = crear_paquete(OP_OK);
+            enviar_paquete(ok, socket_gateway);
+            destruir_paquete(ok);
+            destruir_paquete(paq);
+            break; // Salir del loop
+        }
+        
+        destruir_paquete(paq);
+    }
+
+    free(buffer_bloque);
+    // Destruir lista pero NO los elementos si se usaron en otro lado
+    list_destroy(lista_bloques_md5); 
+    close(socket_gateway);
+    free(args);
     return NULL;
 }

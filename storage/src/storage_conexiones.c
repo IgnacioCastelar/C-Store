@@ -24,7 +24,9 @@ void iniciar_conexiones_worker(int socket_server) {
     log_info(logger, "Servidor Storage escuchando conexiones de Workers...");
     
     while (1) {
-        int socket_cliente = esperar_cliente(socket_server);
+        // --- FIX REFACTOR UTILS: Pasamos logger explícitamente ---
+        int socket_cliente = esperar_cliente(socket_server, logger);
+        // ---------------------------------------------------------
         
         // Realizar Handshake
         t_workerStorage *worker = recibir_id_worker(socket_cliente);

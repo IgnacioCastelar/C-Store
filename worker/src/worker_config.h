@@ -14,6 +14,7 @@ typedef struct {
     int retardo_memoria;
     char* algoritmo_reemplazo;
     char* path_scripts;
+    int puerto_escucha_datos;
 } ConfigWorker;
 
 ConfigWorker* worker_config_create(char* path, t_log* logger);

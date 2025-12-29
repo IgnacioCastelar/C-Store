@@ -1,7 +1,8 @@
 #include "conexiones_servidor.h"
 #include <stdint.h> // Necesario para uint8_t, uint32_t
 
-int iniciar_servidor(int puerto)
+// Agregamos el parametro logger
+int iniciar_servidor(int puerto, t_log* logger)
 {
     int err;
     int socket_servidor;
@@ -16,7 +17,7 @@ int iniciar_servidor(int puerto)
 
     err = getaddrinfo(NULL, puerto_str, &hints, &servinfo);
     if (err != 0) {
-        log_info(logger, "Hubo algun tipo de error en getaddrinfo.");
+        log_error(logger, "Hubo algun tipo de error en getaddrinfo."); // Usamos el logger pasado
         return -1;
     }
 
@@ -46,12 +47,13 @@ int iniciar_servidor(int puerto)
     return socket_servidor;
 }
 
-int esperar_cliente(int socket_servidor)
+int esperar_cliente(int socket_servidor, t_log* logger)
 {
     int socket_cliente = accept(socket_servidor, NULL, NULL);
     if(socket_cliente == -1) {
-        log_info(logger, "Ocurrio un error al aceptar un nuevo cliente");
+        log_error(logger, "Ocurrio un error al aceptar un nuevo cliente");
     }
+    log_info(logger, "Se conecto un cliente!"); // Opcional
     return socket_cliente;
 }
 
@@ -60,7 +62,7 @@ int recibir_operacion(int socket_cliente)
     uint8_t cod_op; // T-001: Leer 1 byte
     if (recv(socket_cliente, &cod_op, sizeof(uint8_t), MSG_WAITALL) > 0)
     {
-        log_info(logger, "Se recibio correctamente el codigo de operacion: %d", cod_op);
+        // log_info(logger, "OpCode: %d", cod_op); // Comentado para no arrastrar logger aqui
         return (int)cod_op;
     }
     else
@@ -88,7 +90,7 @@ void *recibir_buffer(int *size, int socket_cliente)
     return buffer;
 }
 
-void recibir_mensaje(int socket_cliente)
+void recibir_mensaje(int socket_cliente, t_log* logger)
 {
     int size;
     char *buffer = recibir_buffer(&size, socket_cliente);
@@ -113,7 +115,7 @@ t_list *recibir_paquete_servidors(int socket_cliente)
     {
         memcpy(&tamanio, buffer + desplazamiento, sizeof(uint32_t));
         desplazamiento += sizeof(uint32_t);
-        
+
         char *valor = malloc(tamanio + 1); // +1 para null terminator por seguridad si es string
         memcpy(valor, buffer + desplazamiento, tamanio);
         valor[tamanio] = '\0'; 

@@ -12,15 +12,18 @@
 #include<assert.h>
 #include"conexiones_cliente.h"
 
-
-extern t_log* logger;
+// ELIMINADO: extern t_log* logger;  <-- Adiós variable global
 
 void* recibir_buffer(int*, int);
 
-int iniciar_servidor(int);
-int esperar_cliente(int);
-void recibir_mensaje(int);
-int recibir_operacion(int);
+// NUEVAS FIRMAS: Agregamos t_log* logger
+int iniciar_servidor(int puerto, t_log* logger); 
+int esperar_cliente(int socket_servidor, t_log* logger);
+
+// Helpers (Opcional refactorizarlos todos, o quitarles el log si no son críticos)
+void recibir_mensaje(int socket_cliente, t_log* logger);
+int recibir_operacion(int socket_cliente); // Simplificado: quitamos log interno o pasamos logger
+
 t_list *recibir_paquete_servidor(int);
 
 #endif /* UTILS_H_ */

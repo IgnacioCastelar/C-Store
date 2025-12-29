@@ -42,8 +42,8 @@ void sighandler(int x) {
 
 int main(int argc, char *argv[])
 {   
-        // 0. Inicialización preventiva para evitar basura en punteros
-
+    // 0. Inicialización preventiva para evitar basura en punteros
+    
     blocks_hash_index = NULL;
     punto_montaje_global = NULL;
     bitmap_global = NULL;
@@ -90,7 +90,10 @@ int main(int argc, char *argv[])
 
     // 5. Iniciar Servidor
     int puerto = config_get_int_value(config, "PUERTO_ESCUCHA");
-    int server_fd = iniciar_servidor(puerto);
+    
+    // --- FIX REFACTOR UTILS: Pasamos logger explícitamente ---
+    int server_fd = iniciar_servidor(puerto, logger);
+    // ---------------------------------------------------------
     
     if (server_fd == -1) {
         log_error(logger, "Error al iniciar el servidor en puerto %d", puerto);

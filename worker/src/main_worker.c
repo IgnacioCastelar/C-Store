@@ -38,6 +38,10 @@ int main(int argc, char* argv[]) {
     pthread_create(&hilo_master, NULL, worker_escuchar_master, worker);
     pthread_detach(hilo_master);
 
+    pthread_t hilo_datos;
+    pthread_create(&hilo_datos, NULL, worker_servidor_datos, worker);
+    pthread_detach(hilo_datos);
+
     pause(); // Bloquear main thread
 
     worker_destroy(worker);
