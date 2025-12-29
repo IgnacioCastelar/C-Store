@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<body>
+    <h2>Subir Archivo a C-Store</h2>
+    <input type="file" id="fileInput">
+    <button onclick="upload()">Subir</button>
+    <script>
+        async function upload() {
+            let file = document.getElementById("fileInput").files[0];
+            let formData = new FormData();
+            formData.append("file", file);
+            
+            let response = await fetch('/api/upload', {
+                method: "POST", 
+                body: formData
+            });
+            let result = await response.json();
+            alert(JSON.stringify(result));
+        }
+    </script>
+</body>
+</html>

@@ -77,6 +77,23 @@ services:
     volumes:
       - ./worker/config:/c-store/worker/config
 
+  # --- GATEWAY (EL PUENTE) ---
+  gateway:
+    container_name: cstore-gateway
+    hostname: cstore-gateway
+    build: ./gateway  # Contexto de construcción específico para Python
+    ports:
+      - "8000:8000"
+    networks:
+      - cstore-net
+    depends_on:
+      - cstore-master # ¡Ajustado para coincidir con tu nombre de servicio!
+    environment:
+      - MASTER_HOST=cstore-master # ¡Ajustado!
+      - MASTER_PORT=4100
+    volumes:
+      - ./gateway:/app # Volumen de código para desarrollo
+
 networks:
   cstore-net:
     driver: bridge

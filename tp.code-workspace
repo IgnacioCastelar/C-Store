@@ -19,6 +19,9 @@
     {
       "name": "utils",
       "path": "utils"
+    },
+    {
+      "path": "gateway"
     }
   ],
   "settings": {
