@@ -25,7 +25,7 @@ int main(int argc, char* argv[]) {
     // Esperamos 15 segundos para dar tiempo al Storage a formatear sus 4096 bloques
     // Esto es vital en la primera ejecución (FRESH_START)
     printf("DEBUG: Worker pausado 15 segundos esperando al Storage...\n");
-    sleep(15);
+    sleep(5);
 
     t_worker* worker = worker_create(config_path, worker_id);
     

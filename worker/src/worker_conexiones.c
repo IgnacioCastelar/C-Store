@@ -27,7 +27,7 @@ void _binario_a_hex_string(unsigned char* digest, char* output) {
     output[32] = '\0'; // Null terminator de seguridad
 }
 
-// Función del Hilo de Ejecución
+// Función del Hilo de Ejecución (Legacy Querys)
 void* _ejecutar_query_thread(void* arg) {
     t_args_ejecucion* args = (t_args_ejecucion*)arg;
     t_worker* w = args->worker;
@@ -81,18 +81,10 @@ int worker_conectar_storage(ConfigWorker* cfg, const char* worker_id, t_log* log
     }
 
     int block_size = 0;
-    int result_ok = 0;
-
+    
     if (resp->buffer->size >= sizeof(int)) {
         memcpy(&block_size, resp->buffer->stream, sizeof(int));
     }
-
-    if (resp->buffer->size >= sizeof(int) * 2) {
-        memcpy(&result_ok, resp->buffer->stream + sizeof(int), sizeof(int));
-    }
-    // ---------------------------------------------
-    // --- FIX DESERIALIZACIÓN (Lectura Directa) ---
-    // El payload es simplemente: [BLOCK_SIZE (4 bytes)] [RESULT (4 bytes)]
 
     destruir_paquete(resp);
 
@@ -132,7 +124,7 @@ void* worker_escuchar_master(void* arg) {
                 memcpy(&nombre_len, stream, sizeof(int)); 
                 stream += sizeof(int);
 
-
+                
                 nombre_query = malloc(nombre_len + 1); 
                 memcpy(nombre_query, stream, nombre_len); 
                 nombre_query[nombre_len] = '\0';
@@ -164,7 +156,7 @@ void* worker_escuchar_master(void* arg) {
                 // Inicializar campos de desalojo antes de ejecutar
                 pthread_mutex_lock(&w->mutex_desalojo);
                 w->solicitud_desalojo_pendiente = false; // Restablecer flag antes de nueva ejecución
-                w->pc_guardado_desalojo = -1;          // Restablecer PC guardado
+                w->pc_guardado_desalojo = -1;          // Restablecer PC guardado      
 
                 while(sem_trywait(&w->sem_confirmacion_desalojo) == 0);          
                 pthread_mutex_unlock(&w->mutex_desalojo);
@@ -196,50 +188,24 @@ void* worker_escuchar_master(void* arg) {
 
             case OP_DESALOJO_QUERY: {
                 log_info(w->logger, "Recibiendo solicitud de desalojo del Master...");
-
-                int handshake_recibido = 0;
-    
-                if (paquete->buffer != NULL && paquete->buffer->size >= sizeof(int)) {
-                memcpy(&handshake_recibido, paquete->buffer->stream, sizeof(int));
-                log_info(w->logger, "Validacion de desalojo - Handshake/ID recibido: %d", handshake_recibido);
-                } else {
-                    log_warning(w->logger, "Solicitud de desalojo recibida sin Handshake (payload vacio).");
-                }
                 
-                // 1 Activa flag
                 pthread_mutex_lock(&w->mutex_desalojo);
                 w->solicitud_desalojo_pendiente = true;
                 pthread_mutex_unlock(&w->mutex_desalojo);
 
-                // 2 ESPERA hilo de ejecución (Bloqueante)
-                log_warning(w->logger, "Esperando confirmacion de detención del hilo de ejecucion...");
                 sem_wait(&w->sem_confirmacion_desalojo);
 
-                // 3 Recupera PC
                 int pc_a_enviar = -1;
                 pthread_mutex_lock(&w->mutex_desalojo);
                 pc_a_enviar = w->pc_guardado_desalojo;
                 pthread_mutex_unlock(&w->mutex_desalojo);
 
-                // 4 Envia respuesta
-                t_paquete* respuesta_desalojo = crear_paquete(OP_RESPUESTA_DESALOJO);
-                t_buffer* buffer_respuesta = buffer_create(0); 
-                
-                if (buffer_respuesta != NULL) {
-                    buffer_add_int(buffer_respuesta, pc_a_enviar); 
-                    
-                    free(respuesta_desalojo->buffer);
-                    
-                    respuesta_desalojo->buffer = buffer_respuesta;
-                    enviar_paquete(respuesta_desalojo, w->fd_master); 
-                    log_info(w->logger, "Enviando PC de desalojo al Master: %d", pc_a_enviar);
-                } else {
-                     log_error(w->logger, "Error al crear buffer de respuesta de desalojo.");
-                }
-
-                if (respuesta_desalojo != NULL) {
-                    destruir_paquete(respuesta_desalojo);
-                }
+                t_paquete* respuesta = crear_paquete(OP_RESPUESTA_DESALOJO);
+                t_buffer* buf = buffer_create(sizeof(int));
+                buffer_add_int(buf, pc_a_enviar);
+                respuesta->buffer = buf;
+                enviar_paquete(respuesta, w->fd_master); 
+                destruir_paquete(respuesta);
                 break;
             }
 
@@ -254,11 +220,13 @@ void* worker_escuchar_master(void* arg) {
     return NULL;
 }
 
-// Función auxiliar que encapsula la lógica MD5 + Storage
+// =================================================================================
+// 🔥 CORRECCIÓN DEFINITIVA T-006: BYPASS CON HEADER DE QUERY ID
+// =================================================================================
 void procesar_bloque_completo(t_worker* w, void* datos, uint32_t tamanio, t_list* lista_md5) {
     
-    // 1. Calcular MD5 (Raw Bytes)
-    unsigned char digest[MD5_DIGEST_LENGTH]; // 16 bytes
+    // 1. Calcular MD5
+    unsigned char digest[MD5_DIGEST_LENGTH];
     
     // SUPRESIÓN DE WARNINGS: MD5 está deprecado en OpenSSL 3.0, pero lo usamos igual.
     #pragma GCC diagnostic push
@@ -272,39 +240,43 @@ void procesar_bloque_completo(t_worker* w, void* datos, uint32_t tamanio, t_list
     // 2. SEGURIDAD: Convertir a Hex String (32 bytes)
     char* hash_hex_string = malloc(33); // 32 chars + \0
     _binario_a_hex_string(digest, hash_hex_string);
-    
-    // Agregamos a la lista local para reporte final
-    list_add(lista_md5, strdup(hash_hex_string)); // Guardamos copia
-
+    list_add(lista_md5, strdup(hash_hex_string)); 
     log_info(w->logger, "Bloque procesado. MD5 Hex: %s", hash_hex_string);
 
-    // 3. Consultar al Storage (OP_CHECK_MD5)
+    // -----------------------------------------------------------------------
+    // 2. CHECK MD5 (Protocolo: [QueryID (4)] + [Hash (32)])
+    // -----------------------------------------------------------------------
     t_paquete* check = crear_paquete(OP_CHECK_MD5);
-    uint32_t len_hash = 33; // Enviamos el null terminator por seguridad o manejamos 32 fijos
-    agregar_a_paquete(check, &len_hash, sizeof(uint32_t));
-    agregar_a_paquete(check, hash_hex_string, len_hash);
+    int dummy_query_id = 0; // "Sacrificio" para el Storage
+
+    // A. Header QueryID (4 bytes) - El Storage "comerá" esto
+    agregar_a_paquete(check, &dummy_query_id, sizeof(int));
+    // B. Payload Hash (32 bytes) - Esto es lo que realmente procesará
+    agregar_a_paquete(check, hash_hex_string, 32);
     
-    // Enviamos request (usando conexión persistente fd_storage)
-    pthread_mutex_lock(&w->archivos_mutex); // Proteger socket storage si es compartido
+    pthread_mutex_lock(&w->archivos_mutex);
     enviar_paquete(check, w->fd_storage);
     destruir_paquete(check);
 
-    // 4. Esperar respuesta del Storage
+    // 3. Esperar respuesta del Storage
     t_paquete* resp = recibir_paquete(w->fd_storage);
     
-    // FIX: Verificar si resp es NULL (posible desconexión del storage)
     if (resp) {
         if (resp->codigo_operacion == OP_BLOCK_MISSING) {
-            log_info(w->logger, "Bloque nuevo detectado. Enviando contenido al Storage...");
+            log_info(w->logger, "Bloque nuevo. Enviando al Storage...");
             
-            // 5. Escribir Bloque (OP_WRITE_BLOCK)
-            // Payload: [Len Hash][Hash Hex][Len Data][Data]
+            // -----------------------------------------------------------------------
+            // 4. WRITE BLOCK (Protocolo: [QueryID (4)] + [Hash (32)] + [Data (N)])
+            // -----------------------------------------------------------------------
             t_paquete* write = crear_paquete(OP_WRITE_BLOCK);
             
-            agregar_a_paquete(write, &len_hash, sizeof(uint32_t));
-            agregar_a_paquete(write, hash_hex_string, len_hash);
+            // A. Header QueryID (4 bytes)
+            agregar_a_paquete(write, &dummy_query_id, sizeof(int));
             
-            agregar_a_paquete(write, &tamanio, sizeof(uint32_t));
+            // B. Hash (32 bytes)
+            agregar_a_paquete(write, hash_hex_string, 32);
+            
+            // C. Data (N bytes)
             agregar_a_paquete(write, datos, tamanio);
             
             enviar_paquete(write, w->fd_storage);
@@ -315,16 +287,17 @@ void procesar_bloque_completo(t_worker* w, void* datos, uint32_t tamanio, t_list
             
             destruir_paquete(write);
         } else {
-            log_info(w->logger, "Bloque existente (Deduplicado). Ahorrando escritura.");
+            log_info(w->logger, "Bloque existente. Ahorrando escritura.");
         }
         destruir_paquete(resp);
     } else {
-        log_error(w->logger, "Error crítico: El Storage no respondió al Check MD5.");
+        log_error(w->logger, "Error crítico: Storage desconectado.");
     }
     
     pthread_mutex_unlock(&w->archivos_mutex);
     free(hash_hex_string);
 }
+// =================================================================================
 
 void* worker_servidor_datos(void* arg) {
     t_worker* w = (t_worker*)arg;
