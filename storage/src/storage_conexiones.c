@@ -24,25 +24,22 @@ static void *atender_worker_storage(void *args);
 // --- Implementación Pública ---
 
 void iniciar_conexiones_worker(int socket_server) {
-    log_info(logger, "Servidor Storage escuchando conexiones de Workers...");
+    log_info(logger, "Servidor Storage LISTO. Esperando Workers...");
     
     while (1) {
-        // --- FIX REFACTOR UTILS: Pasamos logger explícitamente ---
+        //Pasamos logger explícitamente
         int socket_cliente = esperar_cliente(socket_server, logger);
-        // ---------------------------------------------------------
         
-        // Realizar Handshake
+        // Handshake inicial
         t_workerStorage *worker = recibir_id_worker(socket_cliente);
         
         if (worker) {
-            // SECCIÓN CRÍTICA: Aumentar contador
             pthread_mutex_lock(&mutex_conteo_workers);
             cantidad_workers_conectados++;
-            int cant_actual = cantidad_workers_conectados;
+            int cant = cantidad_workers_conectados;
             pthread_mutex_unlock(&mutex_conteo_workers);
 
-            // LOG OBLIGATORIO: Conexión con cantidad
-            log_info(logger, "##Se conecta el Worker %s Cantidad de Workers: %d", worker->id_worker, cant_actual);
+            log_info(logger, "## Nuevo Worker Conectado: %s | Total: %d", worker->id_worker, cant);
             
             pthread_t hilo;
             if (pthread_create(&hilo, NULL, atender_worker_storage, worker) != 0) {
@@ -61,7 +58,7 @@ void iniciar_conexiones_worker(int socket_server) {
                 pthread_detach(hilo);
             }
         } else {
-            log_error(logger, "Falló el handshake con un cliente. Cerrando conexión.");
+            log_error(logger, "Handshake fallido. Rechazando conexión.");
             close(socket_cliente);
         }
     }
@@ -77,7 +74,7 @@ static t_workerStorage *recibir_id_worker(int fd_cliente) {
     t_workerStorage *paquete_worker = recibir_paquete_id(fd_cliente);
 
     if (paquete_worker == NULL) {
-        log_error(logger, "Error al recibir identificación del WORKER");
+        log_error(logger, "Error recibiendo ID del Worker");
         // FIX: Enviar error como paquete estructurado para evitar desync del Worker
         // (Aunque el Worker actual podría esperar un int raw, lo ideal es mantener protocolo)
         send(fd_cliente, &result_error, sizeof(int), 0);
@@ -94,28 +91,25 @@ static t_workerStorage *recibir_id_worker(int fd_cliente) {
     // Si por alguna razón la variable global se corrompió o no se inició,
     // intentamos recuperarla del disco como último recurso.
     if (tam_block == 0) {
-        log_warning(logger, "[Seguridad] BlockSize en memoria es 0. Recuperando desde disco...");
-        
+        log_warning(logger, "[Self-Healing] BlockSize en memoria es 0. Intentando recuperar de disco...");
         char* path_sb = string_from_format("%s/superblock.config", punto_montaje_global);
         t_config* sb = config_create(path_sb);
         
         if (sb) {
             tam_block = config_get_int_value(sb, "BLOCK_SIZE");
             block_size_global = tam_block; // Reparamos la memoria
-            log_info(logger, "[Seguridad] BlockSize recuperado exitosamente: %d", tam_block);
+            log_info(logger, "[Self-Healing] BlockSize recuperado: %d", tam_block);
             config_destroy(sb);
         } else {
             // Si falla aquí, sí es un error fatal real
-            log_error(logger, "[Fatal] No se pudo recuperar el BlockSize. Archivo no encontrado: %s", path_sb);
+            log_error(logger, "[FATAL] Imposible recuperar BlockSize.");
         }
         free(path_sb);
     }
-    // -----------------------------------------------------
-
     if (tam_block == 0) {
         log_warning(logger, "CUIDADO: Enviando BlockSize=0 (¿Superbloque no cargado?)");
     }
-
+    // Responder Handshake
     t_paquete *paquete = crear_paquete(HANDSHAKE_WORKER);
     agregar_a_paquete(paquete, &tam_block, sizeof(int));
     agregar_a_paquete(paquete, &result_ok, sizeof(int));
@@ -131,9 +125,8 @@ static t_workerStorage *recibir_paquete_id(int socket_worker) {
     // Nota: Podría refactorizarse usando recibir_paquete de utils, pero respetamos la lógica original funcional
     t_paquete *paquete = malloc(sizeof(t_paquete));
     paquete->buffer = malloc(sizeof(t_buffer));
-    int result_error = -1;
 
-    // FIX T-001: Leer OpCode como 1 Byte (uint8_t)
+    // Lectura manual byte a byte para T-001 (uint8_t)
     uint8_t cod_op;
     if (recv(socket_worker, &cod_op, sizeof(uint8_t), MSG_WAITALL) <= 0) {
         log_error(logger, "Error recibiendo op code en handshake");
@@ -142,7 +135,6 @@ static t_workerStorage *recibir_paquete_id(int socket_worker) {
     }
     paquete->codigo_operacion = (op_code)cod_op;
 
-    // FIX T-001: Leer Size como 4 Bytes (uint32_t)
     uint32_t size;
     if (recv(socket_worker, &size, sizeof(uint32_t), MSG_WAITALL) <= 0) {
         log_error(logger, "Error recibiendo size en handshake");
@@ -151,7 +143,6 @@ static t_workerStorage *recibir_paquete_id(int socket_worker) {
     }
     paquete->buffer->size = size;
 
-    // Leer Stream
     if (size > 0) {
         paquete->buffer->stream = malloc(size);
         if (recv(socket_worker, paquete->buffer->stream, size, MSG_WAITALL) <= 0) {
@@ -164,16 +155,15 @@ static t_workerStorage *recibir_paquete_id(int socket_worker) {
     }
 
     if (paquete->codigo_operacion != HANDSHAKE_WORKER) {
-        log_error(logger, "Código incorrecto en handshake: %d (Esperado: %d)", paquete->codigo_operacion, HANDSHAKE_WORKER);
-        send(socket_worker, &result_error, sizeof(int), 0);
-        eliminar_paquete(paquete); // Esto libera stream, buffer y paquete
+        if(paquete->buffer->stream) free(paquete->buffer->stream);
+        free(paquete->buffer); free(paquete);
         return NULL;
     }
 
     t_workerStorage *id_worker = paquete_deserializar_s(paquete->buffer);
     
     // Liberamos el paquete temporal (id_worker ya tiene copia de los datos necesarios)
-    if (paquete->buffer->stream) free(paquete->buffer->stream);
+    if(paquete->buffer->stream) free(paquete->buffer->stream);
     free(paquete->buffer);
     free(paquete);
 
@@ -189,7 +179,7 @@ static t_workerStorage *paquete_deserializar_s(t_buffer *buffer) {
 
     worker->modulo = malloc(worker->len_modulo + 1);
     memcpy(worker->modulo, stream, worker->len_modulo);
-    worker->modulo[worker->len_modulo] = '\0'; 
+    worker->modulo[worker->len_modulo] = '\0';
     stream += worker->len_modulo;
 
     memcpy(&(worker->len_id), stream, sizeof(int));
@@ -204,12 +194,15 @@ static t_workerStorage *paquete_deserializar_s(t_buffer *buffer) {
     if (buffer->size >= (stream - buffer->stream) + sizeof(int)) {
         memcpy(&(worker->query_id), stream, sizeof(int));
     } else {
-        worker->query_id = -1; 
+        worker->query_id = -1;
     }
 
     return worker;
 }
 
+// =================================================================================
+// 🔥 FUNCIÓN CRÍTICA CORREGIDA PARA T-016 (STRESS TEST)
+// =================================================================================
 static void *atender_worker_storage(void *args) {
     t_workerStorage *worker = (t_workerStorage *)args;
     int socket = worker->socket_cliente;
@@ -221,38 +214,37 @@ static void *atender_worker_storage(void *args) {
             // SECCIÓN CRÍTICA: Decrementar contador
             pthread_mutex_lock(&mutex_conteo_workers);
             cantidad_workers_conectados--;
-            int cant_actual = cantidad_workers_conectados;
+            int cant = cantidad_workers_conectados;
             pthread_mutex_unlock(&mutex_conteo_workers);
-
-            log_info(logger, "##Se desconecta el Worker %s Cantidad de Workers: %d", worker->id_worker, cant_actual);
+            log_info(logger, "## Worker Desconectado: %s | Restantes: %d", worker->id_worker, cant);
             break;
         }
 
-        // Validación de payload
-        if (paquete->buffer->size == 0 || !paquete->buffer->stream) {
-             // Ops sin payload (como FLUSH a veces) o errores
+        // Simulación de retardo (si existe en config)
+        if (config_has_property(config, "RETARDO_OPERACION")) {
+            int retardo = config_get_int_value(config, "RETARDO_OPERACION");
+            if(retardo > 0) usleep(retardo * 1000);
         }
-
-        // Retardo simulado configurado
-        int retardo_op = config_get_int_value(config, "RETARDO_OPERACION");
-        usleep(1000 * retardo_op);
 
         void* stream = paquete->buffer->stream;
         int query_id = -1;
         
-        // Extraer Query ID si hay stream suficiente
+        // 1. Extracción de Header Común (Query ID)
         if (paquete->buffer->size >= sizeof(int)) {
             memcpy(&query_id, stream, sizeof(int));
-            stream += sizeof(int);
+            stream += sizeof(int); // AVANZAMOS EL STREAM 4 BYTES
         }
         
+        // Variables auxiliares
         char* file = NULL;
         char* tag  = NULL;
         int respuesta = 0;
 
         switch (paquete->codigo_operacion) {
+        
+        // --- OPERACIONES LEGACY (Sin Cambios) ---
         case OP_CREATE:
-            file = (char*)stream;
+            file = (char*)stream; 
             stream += strlen(file) + 1;
             tag = (char*)stream;
 
@@ -261,58 +253,48 @@ static void *atender_worker_storage(void *args) {
             break;
 
         case OP_TRUNCATE:
-            file = (char*)stream;
+            file = (char*)stream; 
             stream += strlen(file) + 1;
-            tag = (char*)stream;
+            tag = (char*)stream; 
             stream += strlen(tag) + 1;
 
             uint32_t nuevo_tamanio;
             memcpy(&nuevo_tamanio, stream, sizeof(uint32_t));
-
+            
             respuesta = op_truncar_file_tag(file, tag, nuevo_tamanio, query_id);
             send(socket, &respuesta, sizeof(int), 0);
             break;
 
-        case OP_STORAGE_WRITE:
-            file = (char*)stream;
-            stream += strlen(file) + 1;
-            tag = (char*)stream;
-            stream += strlen(tag) + 1;
-
-            uint32_t bloque_logico_w;
-            memcpy(&bloque_logico_w, stream, sizeof(uint32_t));
+        case OP_STORAGE_WRITE: // Escritura Legacy (No MD5)
+            file = (char*)stream; stream += strlen(file) + 1;
+            tag = (char*)stream; stream += strlen(tag) + 1;
+            uint32_t blk_w;
+            memcpy(&blk_w, stream, sizeof(uint32_t));
             stream += sizeof(uint32_t);
             
-            // Calculo seguro del payload restante
-            long bytes_header = (void*)stream - (void*)paquete->buffer->stream;
-            long tam_payload = paquete->buffer->size - bytes_header;
+            long header_size = (void*)stream - (void*)paquete->buffer->stream;
+            long payload_size = paquete->buffer->size - header_size;
 
-            if (tam_payload > 0) {
-                void* contenido = malloc(tam_payload);
-                memcpy(contenido, stream, tam_payload);
-                respuesta = op_escribir_bloque(file, tag, bloque_logico_w, contenido, tam_payload, query_id);
+            if (payload_size > 0) {
+                void* contenido = malloc(payload_size);
+                memcpy(contenido, stream, payload_size);
+                respuesta = op_escribir_bloque(file, tag, blk_w, contenido, payload_size, query_id);
                 free(contenido);
-            } else {
-                log_error(logger, "Fallo malloc en WRITE");
-                respuesta = -1; 
-            }
-
+            } else respuesta = -1;
+            
             send(socket, &respuesta, sizeof(int), 0);
             break;
             
         case OP_STORAGE_READ:
-            file = (char*)stream;
-            stream += strlen(file) + 1;
-            tag = (char*)stream;
-            stream += strlen(tag) + 1;
-
-            uint32_t bloque_logico_r;
-            memcpy(&bloque_logico_r, stream, sizeof(uint32_t));
+            file = (char*)stream; stream += strlen(file) + 1;
+            tag = (char*)stream; stream += strlen(tag) + 1;
+            uint32_t blk_r;
+            memcpy(&blk_r, stream, sizeof(uint32_t));
             
-            void* datos = op_leer_bloque(file, tag, bloque_logico_r, query_id);
+            void* datos = op_leer_bloque(file, tag, blk_r, query_id);
             if (datos) {
                 t_paquete* resp = crear_paquete(OP_STORAGE_READ);
-                agregar_a_paquete(resp, datos, block_size_global); // Envía bloque completo
+                agregar_a_paquete(resp, datos, block_size_global);
                 enviar_paquete(resp, socket);
                 destruir_paquete(resp);
                 free(datos);
@@ -320,16 +302,16 @@ static void *atender_worker_storage(void *args) {
                 // Error en lectura: Enviamos paquete vacío o código error
                 // Protocolo: Podríamos enviar un paquete con size 0 o un int error
                 // Manteniendo lógica legacy: enviar int error en un paquete
-                t_paquete* err_pkg = crear_paquete(OP_ERROR); // Usar OP_ERROR preferiblemente
-                int err_code = -1;
-                agregar_a_paquete(err_pkg, &err_code, sizeof(int));
-                enviar_paquete(err_pkg, socket);
-                destruir_paquete(err_pkg);
+                t_paquete* err = crear_paquete(OP_ERROR);
+                int err_code = -1; // Payload mínimo para que no explote
+                agregar_a_paquete(err, &err_code, sizeof(int)); 
+                enviar_paquete(err, socket);
+                destruir_paquete(err);
             }
             break;
 
         case OP_STORAGE_COMMIT:
-            file = (char*)stream;
+            file = (char*)stream; 
             stream += strlen(file) + 1;
             tag = (char*)stream;
 
@@ -338,7 +320,7 @@ static void *atender_worker_storage(void *args) {
             break;
 
         case OP_STORAGE_DELETE:
-            file = (char*)stream;
+            file = (char*)stream; 
             stream += strlen(file) + 1;
             tag = (char*)stream;
 
@@ -351,54 +333,68 @@ static void *atender_worker_storage(void *args) {
              send(socket, &respuesta, sizeof(int), 0);
              break;
 
+        // --- OPERACIONES NUEVAS (FIX T-016) ---
+        
         case OP_CHECK_MD5:
-            // Payload: [MD5 (32 bytes)]
-            if (paquete->buffer->size >= 32) {
+            // Stream ya avanzó 4 bytes (QueryID). Quedan los 32 del MD5.
+            if ((paquete->buffer->size - sizeof(int)) >= 32) {
                 char md5_hex[33]; // +1 para \0
                 memcpy(md5_hex, stream, 32);
                 md5_hex[32] = '\0'; // Null-terminate para manejo seguro de strings
 
                 int existe = op_verificar_bloque_md5(md5_hex, query_id);
                 
-                // Respuesta según Protocolo
-                op_code respuesta_code = (existe == 1) ? OP_BLOCK_EXIST : OP_BLOCK_MISSING;
-                
-                // Enviamos paquete vacío solo con el OpCode de respuesta
-                t_paquete* resp_md5 = crear_paquete(respuesta_code);
-                // (Opcional: Agregar payload si el protocolo futuro lo requiere)
+                // RESPUESTA OBLIGATORIA (ACK)
+                t_paquete* resp_md5 = crear_paquete((existe == 1) ? OP_BLOCK_EXIST : OP_BLOCK_MISSING);
+                // Agregamos un int dummy para consistencia, aunque no es estricto
+                int dummy = 0;
+                agregar_a_paquete(resp_md5, &dummy, sizeof(int));
                 enviar_paquete(resp_md5, socket);
                 destruir_paquete(resp_md5);
                 
             } else {
-                log_error(logger, "##%d - CHECK_MD5: Payload incorrecto (size < 32)", query_id);
-                // Enviar Error
+                log_error(logger, "##%d - CHECK_MD5: Payload inválido", query_id);
+                // Incluso en error, respondemos para no freezar al worker
+                t_paquete* err = crear_paquete(OP_ERROR);
+                enviar_paquete(err, socket);
+                destruir_paquete(err);
             }
             break;
 
         case OP_WRITE_BLOCK:
-            // Payload: [MD5 (32 bytes)] + [DATA (block_size)]
-            if (paquete->buffer->size >= 32) {
+            // Protocolo: [QueryID (4)] + [MD5 (32)] + [DATA (N)]
+            // Stream ya está después del QueryID.
+            if ((paquete->buffer->size - sizeof(int)) >= 32) {
                 char md5_write[33];
                 memcpy(md5_write, stream, 32);
                 md5_write[32] = '\0';
-                stream += 32;
+                stream += 32; // Avanzamos puntero sobre MD5
 
-                // El resto del stream es la DATA
-                int data_size = paquete->buffer->size - 32; // Ajuste dinámico o usar block_size_global
+                // [FIX CRÍTICO] Cálculo correcto del tamaño de datos
+                // Tamaño Total - (QueryID 4 bytes) - (MD5 32 bytes)
+                int data_size = paquete->buffer->size - sizeof(int) - 32;
                 
-                if (op_escribir_bloque_md5_safe(md5_write, stream, data_size, query_id) == 0) {
-                    // Éxito (o ya existía)
-                    t_paquete* resp_ok = crear_paquete(OP_OK);
-                    enviar_paquete(resp_ok, socket);
-                    destruir_paquete(resp_ok);
+                if (data_size > 0) {
+                    if (op_escribir_bloque_md5_safe(md5_write, stream, data_size, query_id) == 0) {
+                        t_paquete* resp_ok = crear_paquete(OP_OK);
+                        enviar_paquete(resp_ok, socket); // ACK DE ÉXITO
+                        destruir_paquete(resp_ok);
+                    } else {
+                        t_paquete* resp_err = crear_paquete(OP_ERROR);
+                        enviar_paquete(resp_err, socket); // ACK DE FALLO (Disco lleno, etc)
+                        destruir_paquete(resp_err);
+                    }
                 } else {
-                    // Fallo (Disco lleno, etc)
-                    t_paquete* resp_err = crear_paquete(OP_ERROR);
-                    enviar_paquete(resp_err, socket);
-                    destruir_paquete(resp_err);
+                     log_error(logger, "##%d - WRITE_BLOCK: Data size 0 o negativo", query_id);
+                     t_paquete* resp_err = crear_paquete(OP_ERROR);
+                     enviar_paquete(resp_err, socket);
+                     destruir_paquete(resp_err);
                 }
             } else {
-                log_error(logger, "##%d - WRITE_BLOCK: Payload insuficiente", query_id);
+                log_error(logger, "##%d - WRITE_BLOCK: Payload insuficiente para MD5", query_id);
+                t_paquete* resp_err = crear_paquete(OP_ERROR);
+                enviar_paquete(resp_err, socket);
+                destruir_paquete(resp_err);
             }
             break;
 
@@ -410,7 +406,7 @@ static void *atender_worker_storage(void *args) {
         eliminar_paquete(paquete);
     }
 
-    // Limpieza al desconectar
+    // Limpieza
     if(worker->id_worker) free(worker->id_worker);
     if(worker->modulo) free(worker->modulo);
     free(worker);

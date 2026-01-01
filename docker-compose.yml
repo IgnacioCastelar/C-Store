@@ -8,10 +8,12 @@ services:
     image: cstore-image
     command: master MASTERPLANIPRIO.config
     environment:
-      - PUERTO_ESCUCHA=4100
-      - LOG_LEVEL=INFO
+      - PUERTO_ESCUCHA=${MASTER_PORT}
+      - LOG_LEVEL=${LOG_LEVEL}
+      # Inyectamos FRESH_START también al Master por si valida metadatos
+      - FRESH_START=${FRESH_START} 
     ports:
-      - "4100:4100" # Metadatos
+      - "${MASTER_PORT}:${MASTER_PORT}"
     networks:
       - cstore-net
     volumes:
@@ -26,18 +28,21 @@ services:
     depends_on:
       - cstore-master
     environment:
-      - PUERTO_ESCUCHA=4000
+      - PUERTO_ESCUCHA=${STORAGE_PORT}
       - PUNTO_MONTAJE=/c-store/storage_data
-      - FRESH_START=FALSE
+      # T-014: Inyección de variables de entorno críticas
+      - FRESH_START=${FRESH_START}
+      - BLOCK_SIZE=${BLOCK_SIZE}
+      - LOG_LEVEL=${LOG_LEVEL}
     ports:
-      - "4002:4000" # Puerto mapeado al host (interno 4000)
+      - "4002:${STORAGE_PORT}"
     networks:
       - cstore-net
     volumes:
       - ./storage/config:/c-store/storage/config
       - cstore-data:/c-store/storage_data
 
-  # --- WORKER 1 (PROCESAMIENTO) ---
+  # --- WORKER 1 ---
   worker-1:
     container_name: worker-1
     image: cstore-image
@@ -48,16 +53,18 @@ services:
     environment:
       - WORKER_IP=worker-1
       - IP_MASTER=cstore-master
-      - PUERTO_MASTER=4100
+      - PUERTO_MASTER=${MASTER_PORT}
       - IP_STORAGE=cstore-storage
-      - PUERTO_STORAGE=4000
+      - PUERTO_STORAGE=${STORAGE_PORT}
       - PUERTO_ESCUCHA=5000
+      - LOG_LEVEL=${LOG_LEVEL}
+      - BLOCK_SIZE=${BLOCK_SIZE}
     networks:
       - cstore-net
     volumes:
       - ./worker/config:/c-store/worker/config
 
-  # --- WORKER 2 (PROCESAMIENTO) ---
+  # --- WORKER 2 ---
   worker-2:
     container_name: worker-2
     image: cstore-image
@@ -68,31 +75,33 @@ services:
     environment:
       - WORKER_IP=worker-2
       - IP_MASTER=cstore-master
-      - PUERTO_MASTER=4100
+      - PUERTO_MASTER=${MASTER_PORT}
       - IP_STORAGE=cstore-storage
-      - PUERTO_STORAGE=4000
+      - PUERTO_STORAGE=${STORAGE_PORT}
       - PUERTO_ESCUCHA=5001
+      - LOG_LEVEL=${LOG_LEVEL}
+      - BLOCK_SIZE=${BLOCK_SIZE}
     networks:
       - cstore-net
     volumes:
       - ./worker/config:/c-store/worker/config
 
-  # --- GATEWAY (EL PUENTE) ---
+  # --- GATEWAY ---
   gateway:
     container_name: cstore-gateway
     hostname: cstore-gateway
-    build: ./gateway  # Contexto de construcción específico para Python
+    build: ./gateway
     ports:
-      - "8000:8000"
+      - "${GATEWAY_PORT}:8000"
     networks:
       - cstore-net
     depends_on:
-      - cstore-master # ¡Ajustado para coincidir con tu nombre de servicio!
+      - cstore-master
     environment:
-      - MASTER_HOST=cstore-master # ¡Ajustado!
-      - MASTER_PORT=4100
+      - MASTER_HOST=cstore-master
+      - MASTER_PORT=${MASTER_PORT}
     volumes:
-      - ./gateway:/app # Volumen de código para desarrollo
+      - ./gateway:/app
 
 networks:
   cstore-net:

@@ -241,7 +241,7 @@ void procesar_bloque_completo(t_worker* w, void* datos, uint32_t tamanio, t_list
     char* hash_hex_string = malloc(33); // 32 chars + \0
     _binario_a_hex_string(digest, hash_hex_string);
     list_add(lista_md5, strdup(hash_hex_string)); 
-    log_info(w->logger, "Bloque procesado. MD5 Hex: %s", hash_hex_string);
+    log_debug(w->logger, "Bloque procesado. MD5 Hex: %s", hash_hex_string);
 
     // -----------------------------------------------------------------------
     // 2. CHECK MD5 (Protocolo: [QueryID (4)] + [Hash (32)])

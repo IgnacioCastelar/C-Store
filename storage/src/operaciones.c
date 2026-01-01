@@ -125,16 +125,25 @@ void inicializar_fs_fresh(const char *punto_montaje) {
     mkdir(ruta_pb, 0755);
     free(ruta_pb);
 
-    // 2. Superblock (Si no existe, se crea; si existe se lee para obtener datos)
+    // 2. Superblock (Lógica T-014 modificada)
     char *ruta_sb = string_from_format("%s/superblock.config", punto_montaje);
     FILE *f_sb = fopen(ruta_sb, "r");
+    
+    // Si no existe, lo creamos tomando valores del ENTORNO si existen
     if (!f_sb) {
         f_sb = fopen(ruta_sb, "w");
         if(f_sb) {
-            // Valores por defecto si no existe
-            fprintf(f_sb, "FS_SIZE=65536\nBLOCK_SIZE=16\n"); // Default por si falla config
+            char* env_bs = getenv("BLOCK_SIZE");
+            char* env_fs = getenv("FS_SIZE");
+            
+            // Valores por defecto o del entorno
+            int block_size = env_bs ? atoi(env_bs) : 16;
+            int fs_size = env_fs ? atoi(env_fs) : 65536;
+
+            fprintf(f_sb, "FS_SIZE=%d\nBLOCK_SIZE=%d\n", fs_size, block_size);
             fclose(f_sb);
-            log_info(logger, "Creado superblock.config por defecto.");
+            log_info(logger, "Creado superblock.config con BS=%d (Source: %s)", 
+                     block_size, env_bs ? "ENV" : "DEFAULT");
         }
     } else fclose(f_sb);
 
@@ -205,18 +214,26 @@ void consulta_fresh() {
     char *punto_montaje = config_get_string_value(config, "PUNTO_MONTAJE");
     // Actualizamos la global si no estaba seteada
     if(punto_montaje_global) free(punto_montaje_global);
-    punto_montaje_global = strdup(punto_montaje);
+    punto_montaje_global = strdup(config_get_string_value(config, "PUNTO_MONTAJE"));
 
-    char *fresh_str = config_get_string_value(config, "FRESH_START");
+    // T-014: Prioridad Variable de Entorno
+    char *fresh_str = getenv("FRESH_START");
+    char *origen = "ENV";
+
+    if (fresh_str == NULL) {
+        fresh_str = config_get_string_value(config, "FRESH_START");
+        origen = "CONFIG";
+    }
+
     int fresh = evaluar_valor(fresh_str);
 
     if (fresh == 1) { // TRUE
-log_info(logger, "---------------------------------------------");
-        log_info(logger, "FRESH_START = TRUE. Inicializando FS limpio...");
         log_info(logger, "---------------------------------------------");
-        borrar_contenido_directorio(punto_montaje);
-        inicializar_fs_fresh(punto_montaje);
-    } 
+        log_info(logger, "FRESH_START = TRUE (Source: %s). Inicializando FS limpio...", origen);
+        log_info(logger, "---------------------------------------------");
+        borrar_contenido_directorio(punto_montaje_global);
+        inicializar_fs_fresh(punto_montaje_global);
+    }
     else if (fresh == 2) { // FALSE
         log_info(logger, "---------------------------------------------");
         log_info(logger, "FRESH_START = FALSE. Levantando FS existente...");

@@ -1,22 +1,113 @@
 <!DOCTYPE html>
-<html>
+<html lang="es" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>C-Store | Distributed Cloud</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
+    <style>
+        /* Pequeños ajustes personalizados */
+        :root { --primary: #0d6efd; }
+        body { padding-top: 2rem; }
+        .logo { font-weight: 800; color: var(--primary); }
+        .success { color: #2ecc71; font-weight: bold; }
+        .error { color: #e74c3c; font-weight: bold; }
+        #progressBar { transition: width 0.4s ease; }
+    </style>
+</head>
 <body>
-    <h2>Subir Archivo a C-Store</h2>
-    <input type="file" id="fileInput">
-    <button onclick="upload()">Subir</button>
-    <script>
-        async function upload() {
-            let file = document.getElementById("fileInput").files[0];
-            let formData = new FormData();
-            formData.append("file", file);
+    <main class="container">
+        <nav>
+            <ul>
+                <li><strong class="logo">C-STORE</strong></li>
+            </ul>
+            <ul>
+                <li><a href="#">Dashboard</a></li>
+                <li><a href="#" role="button" class="outline">Logout</a></li>
+            </ul>
+        </nav>
+
+        <article>
+            <header>
+                <hgroup>
+                    <h2>Subir Archivo</h2>
+                    <h3>Almacenamiento Distribuido con Deduplicación (CAS)</h3>
+                </hgroup>
+            </header>
+
+            <form id="uploadForm">
+                <label for="fileInput">Selecciona un archivo para ingestar:</label>
+                <input type="file" id="fileInput" name="file" required>
+                
+                <div id="progressContainer" style="display:none; margin-top: 20px;">
+                    <label>Subiendo...</label>
+                    <progress id="progressBar" value="0" max="100"></progress>
+                </div>
+
+                <footer>
+                    <button type="submit" id="uploadBtn">Iniciar Upload Distribuido 🚀</button>
+                </footer>
+            </form>
             
-            let response = await fetch('/api/upload', {
-                method: "POST", 
-                body: formData
-            });
-            let result = await response.json();
-            alert(JSON.stringify(result));
-        }
+            <div id="status"></div>
+        </article>
+
+        <footer style="text-align: center; font-size: 0.8rem; opacity: 0.7;">
+            <p>Arquitectura: Python Gateway • C Workers • C Storage • Docker Network</p>
+        </footer>
+    </main>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        const fileInput = document.getElementById('fileInput');
+        const statusDiv = document.getElementById('status');
+        const progressBar = document.getElementById('progressBar');
+        const progressContainer = document.getElementById('progressContainer');
+        const uploadBtn = document.getElementById('uploadBtn');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            // UI Reset
+            statusDiv.innerHTML = '<p aria-busy="true">Negociando con Master...</p>';
+            statusDiv.className = '';
+            uploadBtn.setAttribute('disabled', 'true');
+            progressContainer.style.display = 'block';
+            progressBar.value = 0;
+            progressBar.removeAttribute('value'); // Indeterminate state al inicio
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                // Simulamos progreso visual (ya que fetch nativo no tiene onprogress de subida fácil)
+                let fakeProgress = setInterval(() => {
+                    progressBar.value = progressBar.value ? Math.min(progressBar.value + 5, 90) : 10;
+                }, 200);
+
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                clearInterval(fakeProgress);
+                progressBar.value = 100;
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    statusDiv.innerHTML = `<p class="success">✅ ¡Éxito! Archivo guardado.<br><small>Worker: ${result.worker_addr} | MD5: ${result.md5}</small></p>`;
+                } else {
+                    statusDiv.innerHTML = `<p class="error">❌ Error: ${result.detail || 'Fallo desconocido'}</p>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<p class="error">💥 Error de Red: ${error.message}</p>`;
+            } finally {
+                uploadBtn.removeAttribute('disabled');
+            }
+        });
     </script>
 </body>
 </html>
