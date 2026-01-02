@@ -1,7 +1,17 @@
 #include "operaciones.h"
 #include "bitmap.h"
-#include <libgen.h>
 #include "blocks_hash_index.h"
+
+// --- LIBRERÍAS ESTÁNDAR NECESARIAS (Agregadas para T-014) ---
+#include <stdlib.h>  // Para getenv, atoi, malloc, free
+#include <string.h>  // Para strcmp, strdup, memset, strerror
+#include <stdio.h>   // Para FILE, fopen, fprintf, snprintf
+#include <unistd.h>  // Para rmdir, unlink, link, access, usleep
+#include <sys/stat.h> // Para mkdir, stat
+#include <dirent.h>  // Para DIR, dirent, opendir
+#include <errno.h>   // Para errno
+#include <libgen.h>
+
 // Variables globales externas
 extern t_log *logger;
 extern char *punto_montaje_global;
@@ -20,8 +30,9 @@ int borrar_directorio_recursivo(const char* dir_path); // Usado por op_eliminar_
 // ADMINISTRACION DEL FILESYSTEM
 
 int evaluar_valor(char *valor_string) {
-    if (strcmp(valor_string, "TRUE") == 0) return 1;
-    if (strcmp(valor_string, "FALSE") == 0) return 2;
+    if (!valor_string) return -1;
+    if (strcmp(valor_string, "TRUE") == 0 || strcmp(valor_string, "1") == 0) return 1;
+    if (strcmp(valor_string, "FALSE") == 0 || strcmp(valor_string, "0") == 0) return 2;
     return -1;
 }
 
@@ -217,9 +228,11 @@ void consulta_fresh() {
     punto_montaje_global = strdup(config_get_string_value(config, "PUNTO_MONTAJE"));
 
     // T-014: Prioridad Variable de Entorno
+    //1. Intentamos leer del entorno (Lo que inyecta Docker/Makefile)
     char *fresh_str = getenv("FRESH_START");
     char *origen = "ENV";
 
+    // 2. Si getenv devuelve NULL (no existe la variable), leemos del archivo .config
     if (fresh_str == NULL) {
         fresh_str = config_get_string_value(config, "FRESH_START");
         origen = "CONFIG";
@@ -273,7 +286,7 @@ void consulta_fresh() {
         bitmap_global = bitmap_crear(punto_montaje, total_blocks);
         pthread_mutex_unlock(&mutex_bitmap);
     } else {
-        log_error(logger, "Valor de FRESH_START inválido en config. Use TRUE o FALSE.");    
+        log_error(logger, "Valor de FRESH_START inválido en config: %s. Use TRUE o FALSE.", fresh_str ? fresh_str : "NULL");    
     }
 }
 

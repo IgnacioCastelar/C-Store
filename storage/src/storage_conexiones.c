@@ -1,15 +1,16 @@
 #include "storage_conexiones.h"
 #include <pthread.h>
 #include <string.h>
-#include "operaciones.h" //DEBUG... UNA VEZ SOLUCIONADO SE VA
-#include <commons/config.h> //DEBUG... UNA VEZ SOLUCIONADO SE VA
+#include <unistd.h> // Agregado para close y usleep
+#include "operaciones.h" //SAFEGUARD
+#include <commons/config.h> //SAFEGUARD
 #include <stdint.h> // T-001: Necesario para uint8_t, uint32_t
 
 // Variables globales externas necesarias
 extern t_log* logger;
 extern t_config* config;
-extern int block_size_global; // Usado para el handshake y el buffer de lectura/escritura
-extern char* punto_montaje_global; //DEBUG, UNA VEZ SOLUCIONADO SE VA
+extern int block_size_global;
+extern char* punto_montaje_global;
 
 // contadores cant. workers
 static int cantidad_workers_conectados = 0;
@@ -27,7 +28,7 @@ void iniciar_conexiones_worker(int socket_server) {
     log_info(logger, "Servidor Storage LISTO. Esperando Workers...");
     
     while (1) {
-        //Pasamos logger explícitamente
+        // Pasamos logger explícitamente
         int socket_cliente = esperar_cliente(socket_server, logger);
         
         // Handshake inicial
@@ -106,9 +107,11 @@ static t_workerStorage *recibir_id_worker(int fd_cliente) {
         }
         free(path_sb);
     }
+    
     if (tam_block == 0) {
         log_warning(logger, "CUIDADO: Enviando BlockSize=0 (¿Superbloque no cargado?)");
     }
+
     // Responder Handshake
     t_paquete *paquete = crear_paquete(HANDSHAKE_WORKER);
     agregar_a_paquete(paquete, &tam_block, sizeof(int));
@@ -126,7 +129,7 @@ static t_workerStorage *recibir_paquete_id(int socket_worker) {
     t_paquete *paquete = malloc(sizeof(t_paquete));
     paquete->buffer = malloc(sizeof(t_buffer));
 
-    // Lectura manual byte a byte para T-001 (uint8_t)
+    // Lectura manual byte a byte para uint8_t
     uint8_t cod_op;
     if (recv(socket_worker, &cod_op, sizeof(uint8_t), MSG_WAITALL) <= 0) {
         log_error(logger, "Error recibiendo op code en handshake");
@@ -201,7 +204,7 @@ static t_workerStorage *paquete_deserializar_s(t_buffer *buffer) {
 }
 
 // =================================================================================
-// 🔥 FUNCIÓN CRÍTICA CORREGIDA PARA T-016 (STRESS TEST)
+// FUNCIÓN CRÍTICA CORREGIDA PARA T-016 (STRESS TEST)
 // =================================================================================
 static void *atender_worker_storage(void *args) {
     t_workerStorage *worker = (t_workerStorage *)args;
@@ -260,7 +263,7 @@ static void *atender_worker_storage(void *args) {
 
             uint32_t nuevo_tamanio;
             memcpy(&nuevo_tamanio, stream, sizeof(uint32_t));
-            
+
             respuesta = op_truncar_file_tag(file, tag, nuevo_tamanio, query_id);
             send(socket, &respuesta, sizeof(int), 0);
             break;
@@ -334,7 +337,7 @@ static void *atender_worker_storage(void *args) {
              break;
 
         // --- OPERACIONES NUEVAS (FIX T-016) ---
-        
+
         case OP_CHECK_MD5:
             // Stream ya avanzó 4 bytes (QueryID). Quedan los 32 del MD5.
             if ((paquete->buffer->size - sizeof(int)) >= 32) {

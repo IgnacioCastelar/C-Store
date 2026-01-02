@@ -33,6 +33,7 @@ services:
       # T-014: Inyección de variables de entorno críticas
       - FRESH_START=${FRESH_START}
       - BLOCK_SIZE=${BLOCK_SIZE}
+      - FS_SIZE=${FS_SIZE} #tamaño del FS
       - LOG_LEVEL=${LOG_LEVEL}
     ports:
       - "4002:${STORAGE_PORT}"

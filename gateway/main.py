@@ -1,10 +1,11 @@
 from fastapi import FastAPI, UploadFile, HTTPException, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles  # <--- IMPORTACIÓN NUEVA
+from fastapi.staticfiles import StaticFiles
 import hashlib
 import struct
 import os
+import sys 
 from cstore_client import CStoreClient, OP_UPLOAD_REQ, OP_UPLOAD_ACK, OP_STREAM_DATA, OP_STREAM_FINISH, OP_ERROR, OP_OK
 
 app = FastAPI(title="C-Store Gateway", version="1.0")
@@ -20,11 +21,17 @@ app.add_middleware(
 MASTER_HOST = os.getenv("MASTER_HOST", "cstore-master")
 MASTER_PORT = int(os.getenv("MASTER_PORT", 4100))
 
+# Log helper para forzar salida inmediata (bypass buffer)
+def log(msg):
+    print(msg, flush=True)
+
 # --- ENDPOINTS DE LA API ---
 
+# [CORRECCION AGENTE 5] SIN 'async'. 
+# Al ser una funcion normal, FastAPI la ejecuta en un ThreadPool separado.
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
-    print(f"[Gateway] Recibida solicitud de subida: {file.filename}")
+def upload_file(file: UploadFile = File(...)):
+    log(f"[Gateway] Recibida solicitud de subida: {file.filename}")
     
     # --- PASO 1: HANDSHAKE CON MASTER ---
     master = CStoreClient()
@@ -34,8 +41,7 @@ async def upload_file(file: UploadFile = File(...)):
         # Preparar Payload OP_UPLOAD_REQ: [LenName (4)][Name][Size (4)]
         filename_bytes = file.filename.encode('utf-8')
         
-        # Intentar obtener tamaño real del archivo (spool)
-        file_size = 0
+        # Lectura Síncrona del tamaño
         file.file.seek(0, 2)
         file_size = file.file.tell()
         file.file.seek(0)
@@ -49,7 +55,7 @@ async def upload_file(file: UploadFile = File(...)):
         master.disconnect()
 
         if opcode == OP_ERROR:
-            raise HTTPException(status_code=400, detail="El Master rechazó la subida (¿Archivo duplicado o sistema lleno?)")
+            raise HTTPException(status_code=400, detail="Master rechazo la subida (¿Archivo duplicado o sistema lleno?)")
         
         if opcode != OP_UPLOAD_ACK:
             raise HTTPException(status_code=500, detail=f"Respuesta inesperada del Master: OpCode {opcode}")
@@ -60,16 +66,16 @@ async def upload_file(file: UploadFile = File(...)):
         
         len_ip = struct.unpack('<I', response[offset:offset+4])[0]
         offset += 4
-        
+
         worker_host = response[offset:offset+len_ip].decode('utf-8') # Ojo: Hostname de Docker (ej: worker-1)
         offset += len_ip
-        
+
         worker_port = struct.unpack('<I', response[offset:offset+4])[0]
         
-        print(f"[Gateway] Master asignó Worker: {worker_host}:{worker_port}")
+        log(f"[Gateway] Master asignó Worker: {worker_host}:{worker_port}")
 
     except Exception as e:
-        print(f"[Gateway] Error con Master: {e}")
+        log(f"[Gateway] Error Master: {e}")
         return JSONResponse(status_code=500, content={"error": f"Fallo al contactar Master: {str(e)}"})
 
     # --- PASO 2: STREAMING AL WORKER ---
@@ -82,7 +88,8 @@ async def upload_file(file: UploadFile = File(...)):
         chunk_size = 1024 * 1024 # 1MB chunks
 
         while True:
-            chunk = await file.read(chunk_size)
+            # [CORRECCION AGENTE 5] Lectura Síncrona (SIN await)
+            chunk = file.file.read(chunk_size)
             if not chunk:
                 break
             
@@ -100,13 +107,14 @@ async def upload_file(file: UploadFile = File(...)):
         worker.disconnect()
 
         if opcode == OP_OK:
+            log(f"[Gateway] EXITO: {file.filename} subido a {worker_host}")
             return {"status": "success", "file": file.filename, "node": worker_host}
         else:
             raise HTTPException(status_code=500, detail="El Worker reportó error al finalizar la escritura")
 
     except Exception as e:
-        print(f"[Gateway] Error con Worker: {e}")
-        return JSONResponse(status_code=500, content={"error": f"Fallo en transmisión al Worker: {str(e)}"})
+        log(f"[Gateway] Error con Worker: {e}")
+        return JSONResponse(status_code=500, content={"error": f"Fallo Worker: {str(e)}"})
 
 # --- SERVIDOR DE ARCHIVOS ESTÁTICOS (FRONTEND) ---
 # Esto debe ir AL FINAL para no bloquear las rutas de la API.
