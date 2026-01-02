@@ -56,48 +56,73 @@ int worker_conectar_master(ConfigWorker* cfg, const char* worker_id, t_log* logg
 }
 
 int worker_conectar_storage(ConfigWorker* cfg, const char* worker_id, t_log* logger, int* out_block_size) {
-    int fd = crear_conexion_cliente_worker(cfg->ip_storage, cfg->puerto_storage, logger);
-    if (fd < 0) {
-        log_error(logger, "No se pudo conectar al Storage %s:%d", cfg->ip_storage, cfg->puerto_storage);
-        return -1;
+    int fd = -1;
+    int intentos = 0;
+    int max_intentos = 12; // 12 intentos * 5 segundos = 60 segundos de tolerancia
+
+    log_info(logger, "Iniciando conexión con Storage en %s:%d...", cfg->ip_storage, cfg->puerto_storage);
+
+    while (intentos < max_intentos) {
+        // 1. Intentar conectar (TCP)
+        fd = crear_conexion_cliente_worker(cfg->ip_storage, cfg->puerto_storage, logger);
+        
+        if (fd > 0) {
+            // Si conecta, intentamos el Handshake inmediatamente
+            log_info(logger, "Conexión TCP establecida (fd=%d). Iniciando Handshake...", fd);
+
+            t_paquete* paquete = crear_paquete_handshake("WORKER", worker_id);
+            enviar_paquete(paquete, fd);
+            destruir_paquete(paquete);
+
+            t_paquete* resp = recibir_paquete(fd);
+            
+            // --- VALIDACIONES ORIGINALES ADAPTADAS AL BUCLE ---
+            
+            if (!resp) {
+                // Caso: Storage aceptó TCP pero cerró o no respondió (típico durante arranque pesado)
+                log_warning(logger, "Storage desconectado durante el handshake. Reintentando...");
+                close(fd); // Importante: Limpiar recurso
+                fd = -1;   // Marcar como fallido para que el loop continúe
+            } 
+            else if (resp->buffer->size < sizeof(int)) {
+                // Caso: Paquete basura
+                log_error(logger, "Respuesta inválida del Storage (tamaño insuficiente). Reintentando...");
+                destruir_paquete(resp);
+                close(fd);
+                fd = -1;
+            }
+            else {
+                // Caso: Paquete con datos, validamos contenido
+                int block_size = 0;
+                memcpy(&block_size, resp->buffer->stream, sizeof(int));
+                destruir_paquete(resp);
+
+                if (block_size <= 0) {
+                    // Caso: Dato de negocio inválido
+                    log_error(logger, "Storage envió BLOCK_SIZE inválido (%d). Reintentando...", block_size);
+                    close(fd);
+                    fd = -1;
+                } else {
+                    // ¡ÉXITO TOTAL!
+                    if (out_block_size) *out_block_size = block_size;
+                    log_info(logger, "Handshake exitoso con Storage. Worker=%s | BLOCK_SIZE=%d", worker_id, block_size);
+                    return fd; // <--- Salimos de la función con el socket vivo
+                }
+            }
+        } 
+        
+        // Si fd es -1, significa que falló connect o falló el handshake.
+        // Aplicamos Backoff (Espera)
+        intentos++;
+        if (intentos % 5 == 0 || intentos == 1) {
+            log_info(logger, "Esperando disponibilidad del Storage (Intento %d/%d)...", intentos, max_intentos);
+        }
+        sleep(5); //tiempo que pasa entre intento
     }
 
-    log_info(logger, "Conectado al Storage en %s:%d (fd=%d)", cfg->ip_storage, cfg->puerto_storage, fd);
-
-    t_paquete* paquete = crear_paquete_handshake("WORKER", worker_id);
-    enviar_paquete(paquete, fd);
-    destruir_paquete(paquete);
-
-    t_paquete* resp = recibir_paquete(fd);
-    if (!resp) {
-        log_error(logger, "Storage no respondió al handshake.");
-        return -1;
-    }
-
-    if (resp->buffer->size < sizeof(int)) {
-        log_error(logger, "Respuesta inválida del Storage (tamaño insuficiente).");
-        destruir_paquete(resp);
-        return -1;
-    }
-
-    int block_size = 0;
-    
-    if (resp->buffer->size >= sizeof(int)) {
-        memcpy(&block_size, resp->buffer->stream, sizeof(int));
-    }
-
-    destruir_paquete(resp);
-
-    if (block_size <= 0) {
-        log_error(logger, "Storage envió un BLOCK_SIZE inválido (%d). ¿FS no formateado?", block_size);
-        // Retornamos error pero NO crasheamos, para ver logs
-        return -1; 
-    }
-
-    if (out_block_size) *out_block_size = block_size;
-
-    log_info(logger, "Handshake exitoso con Storage. Worker=%s | BLOCK_SIZE=%d", worker_id, block_size);
-    return fd;
+    // Si salimos del while, se agotaron los intentos
+    log_error(logger, "FATAL: Imposible conectar con Storage tras %d segundos.", max_intentos);
+    return -1;
 }
 
 void* worker_escuchar_master(void* arg) {

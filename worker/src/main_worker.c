@@ -22,10 +22,8 @@ int main(int argc, char* argv[]) {
         config_path = string_from_format("./config/%s", config_filename);
     }
 
-    // Esperamos 25 segundos para dar tiempo al Storage a formatear sus 4096 bloques
-    // Esto es vital en la primera ejecución (FRESH_START)
-    printf("DEBUG: Worker pausado 25 segundos esperando al Storage...\n");
-    sleep(25);
+    // Eliminado el sleep(25). 
+    // La responsabilidad de esperar al Storage recae en worker_create -> worker_conectar_storage.
 
     t_worker* worker = worker_create(config_path, worker_id);
     
