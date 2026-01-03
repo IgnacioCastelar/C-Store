@@ -11,7 +11,6 @@ t_log *logger;
 t_config *config;
 int contador_workers_libres = 0;
 int contador_workers = 0;
-int tiempo_aging;
 int worker_rr_index = 0;
 
 // Helper para iterador de diccionario (T-009)
@@ -47,9 +46,9 @@ void cargar_indice_desde_disco() {
 
     char buffer[256];
     while (fgets(buffer, sizeof(buffer), f)) {
-        // Remover salto de linea
+		// Remover salto de linea
         buffer[strcspn(buffer, "\n")] = 0;
-        
+
         char **parts = string_split(buffer, "=");
         if (parts[0] && parts[1]) {
             // Guardamos copia en heap para evitar problemas con string_split
@@ -62,8 +61,33 @@ void cargar_indice_desde_disco() {
     log_info(logger, "T-009: Persistencia cargada. %d archivos recuperados.", dictionary_size(indice_archivos));
 }
 
+// Función auxiliar para eliminar workers de la lista
+bool _es_el_worker(void* elemento, int id_buscado) {
+    return ((t_worker_conectada*)elemento)->id_worker == id_buscado;
+}
 
-// ... (liberar_y_salir igual)
+void desconexion_worker(t_worker_conectada *worker) {
+    if (!worker) return;
+    int id = worker->id_worker;
+    log_warning(logger, "Worker %d desconectado. Limpiando recursos...", id);
+
+    pthread_mutex_lock(&mutex_worker);
+    
+    // Eliminamos de la lista global usando una lambda manual
+    // Como commons no soporta lambdas con capture, iteramos y removemos manualmente es mas seguro aqui
+    // O simplemente usamos list_remove_by_condition con variable global auxiliar, pero para simplificar:
+    
+    bool _condition(void* elem) {
+        return ((t_worker_conectada*)elem)->id_worker == id;
+    }
+    list_remove_and_destroy_by_condition(workers_conectados, _condition, destruir_worker);
+
+    contador_workers--;
+    // Nota: El puntero 'worker' ya fue liberado por destruir_worker, no usarlo mas.
+    
+    pthread_mutex_unlock(&mutex_worker);
+}
+
 void liberar_y_salir(int s)
 {
 	log_info(logger, "Cierre recibida (%d). Terminando Master...", s);
@@ -100,16 +124,10 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-    // ... (El resto del main sigue igual hasta el final)
+	// ... (El resto del main sigue igual hasta el final)
 	signal(SIGINT, liberar_y_salir);
 
 	int puerto = config_get_int_value(config, "PUERTO_ESCUCHA");
-	tiempo_aging = config_get_int_value(config, "TIEMPO_AGING");
-
-	if (tiempo_aging == 0)
-	{
-		log_info(logger, "Planificador sin Aging (TIEMPO_AGING=0)");
-	}
 
 	int socket_server = iniciar_servidor(puerto, logger); // Pasamos la variable global logger del Master
 	int *socketParaHilo = malloc(sizeof(int));
@@ -128,10 +146,10 @@ int main(int argc, char *argv[])
 	pthread_create(&conexiones, NULL, iniciar_conexiones, socketParaHilo);
 	pthread_detach(conexiones);
 
-	log_info(logger, "[MAIN_MASTER] Iniciando planificador...");
-	iniciar_planificador_corto_plazo();
-
-	sem_post(&sem_inicio_planificacion);
+    // EL PLANIFICADOR HA MUERTO. LARGA VIDA AL STORAGE.
+	// log_info(logger, "[MAIN_MASTER] Iniciando planificador...");
+	// iniciar_planificador_corto_plazo();
+	// sem_post(&sem_inicio_planificacion);
 
 	log_info(logger, "Master iniciado correctamente.");
 	sem_wait(&sem_avanzar);
@@ -187,7 +205,7 @@ void *iniciar_conexiones(void *socket_server)
 
 			// Despierta al planificador
 			sem_post(&sem_hay_workers);
-			sem_post(&sem_evento_planificador);
+			sem_post(&sem_evento_planificador); // Dejarlo por compatibilidad de semáforos, aunque no planifique
 
 			log_info(logger, "## Se conecta el Worker %d", worker->id_worker);
 			pthread_create(&hilo_cliente, NULL, atender_worker, worker);
@@ -196,7 +214,7 @@ void *iniciar_conexiones(void *socket_server)
 			break;
 
 		case HANDSHAKE_QUERY:
-			log_info(logger, "Se conectó un Query Control");
+			log_info(logger, "Se conectó un Query Control (Ignorado en V1.0)");
 			destruir_paquete(paquete_handshake);
 			break;
 
@@ -205,7 +223,7 @@ void *iniciar_conexiones(void *socket_server)
 		    log_info(logger, "Petición de subida recibida del Gateway (Socket %d)", socket_cliente);
 
 		    // 1. Deserializar Nombre y Tamaño
-		    int despl = 0;
+			int despl = 0;
 		    char* nombre_archivo = deserializar_string(paquete_handshake->buffer->stream, &despl);
 		    uint32_t tam_archivo;
 		    memcpy(&tam_archivo, paquete_handshake->buffer->stream + despl, sizeof(uint32_t));
@@ -229,7 +247,7 @@ void *iniciar_conexiones(void *socket_server)
         		if (cantidad_workers == 0) {
 		            log_error(logger, "Error crítico: No hay Workers conectados para atender la subida.");
 		            // Enviar Error 201: ERR_NO_WORKERS
-        		    pthread_mutex_unlock(&mutex_worker);
+		            pthread_mutex_unlock(&mutex_worker);
             		t_paquete* err = crear_paquete(OP_ERROR); 
             		enviar_paquete(err, socket_cliente);
             		destruir_paquete(err);
@@ -290,12 +308,13 @@ void *iniciar_conexiones(void *socket_server)
 }
 
 void *atender_querys(void *query) { return NULL; }
+
 void *atender_worker(void *args) {
 	t_worker_conectada *worker = (t_worker_conectada *)args;
 	while (1) {
 		t_paquete *paquete = recibir_paquete(worker->socket_cliente);
 		if (!paquete) {
-			desconexion_worker(worker);
+			desconexion_worker(worker); // <--- Ahora sí existe
 			break;
 		} else {
 			destruir_paquete(paquete);
@@ -303,6 +322,7 @@ void *atender_worker(void *args) {
 	}
 	return NULL;
 }
+
 void mostrar_lista_workers(t_list *lista) {}
 void mostrar_lista_querys(t_list *lista) {}
 void liberar_worker(int idQ) {}

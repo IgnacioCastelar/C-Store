@@ -1,4 +1,5 @@
 # Agente 5: Makefile de Orquestación Operativa
+# Versión: 1.3 (Entrypoint Bypass Fix)
 
 include .env
 export
@@ -21,7 +22,13 @@ down:
 reset:
 	@echo "EJECUTANDO PURGA (Fresh Start)..."
 	docker-compose down -v
-	@echo "Sistema reseteado. Los datos del Storage han sido eliminados."
+	
+	@echo "Limpiando persistencia local del Master..."
+	# FIX: Usamos --entrypoint /bin/sh para saltarnos el entrypoint.sh del proyecto
+	# y ejecutamos el comando rm directamente.
+	-docker run --rm --entrypoint /bin/sh -v "$(PWD)/master/metadata:/clean" cstore-image -c "rm -f /clean/metadata.dat" || true
+	
+	@echo "Sistema reseteado completamente."
 
 # Muestra logs en tiempo real
 logs:

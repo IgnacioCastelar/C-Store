@@ -1,4 +1,6 @@
 #include "estructuras_master.h"
+#include <stdlib.h> // <--- NECESARIO para free, malloc
+#include <unistd.h> // <--- NECESARIO para close
 
 t_list *workers_conectados;
 t_list *cola_querys_ready;
@@ -16,7 +18,6 @@ pthread_mutex_t mutex_ready = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutex_exec = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutex_exit = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutex_worker = PTHREAD_MUTEX_INITIALIZER;
-//pthread_mutex_t mutex_query = PTHREAD_MUTEX_INITIALIZER;
 
 void destruir_query(void *elemento)
 {
@@ -88,5 +89,4 @@ void destruir_estructuras_master()
     pthread_mutex_destroy(&mutex_exec);
     pthread_mutex_destroy(&mutex_exit);
     pthread_mutex_destroy(&mutex_worker);
-    //pthread_mutex_destroy(&mutex_query);
 }

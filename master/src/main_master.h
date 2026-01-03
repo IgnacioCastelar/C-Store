@@ -6,7 +6,6 @@
 #include"conexiones_servidor.h"
 #include<deserealizacion_master.h>
 #include<pthread.h>
-#include<planificador_querys.h>
 #include<semaphore.h>
 #include "estructuras_master.h"
 #include<commons/temporal.h>
