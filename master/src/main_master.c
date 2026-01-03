@@ -1,15 +1,67 @@
 #include "main_master.h"
 #include <commons/string.h>
 #include <commons/collections/dictionary.h>
+#include <stdio.h>
+#include "estructuras_master.h"
 
-// Estructura para persistencia básica (Roadmap T-009)
-t_dictionary *indice_archivos;
+#define RUTA_METADATA "/c-store/master/metadata/metadata.dat"
+
+// Variables globales del módulo (externas vienen de estructuras_master.h)
 t_log *logger;
 t_config *config;
 int contador_workers_libres = 0;
 int contador_workers = 0;
 int tiempo_aging;
 int worker_rr_index = 0;
+
+// Helper para iterador de diccionario (T-009)
+// NOTA: Esta variable global hace que la persistencia NO sea thread-safe por ahora.
+static FILE *f_persist_temp = NULL;
+
+void _escribir_entrada(char* key, void* value) {
+    if (f_persist_temp) {
+        fprintf(f_persist_temp, "%s=%s\n", key, (char*)value);
+    }
+}
+
+void guardar_indice_en_disco() {
+    f_persist_temp = fopen(RUTA_METADATA, "w");
+    if (f_persist_temp == NULL) {
+        log_error(logger, "T-009: Error al abrir archivo de metadata para escritura: %s", RUTA_METADATA);
+        return;
+    }
+    
+    dictionary_iterator(indice_archivos, _escribir_entrada);
+    
+    fclose(f_persist_temp);
+    f_persist_temp = NULL;
+    log_info(logger, "T-009: Indice de archivos persistido en disco.");
+}
+
+void cargar_indice_desde_disco() {
+    FILE *f = fopen(RUTA_METADATA, "r");
+    if (f == NULL) {
+        log_warning(logger, "T-009: No se encontro metadata previa (%s). Iniciando indice vacio.", RUTA_METADATA);
+        return;
+    }
+
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), f)) {
+        // Remover salto de linea
+        buffer[strcspn(buffer, "\n")] = 0;
+        
+        char **parts = string_split(buffer, "=");
+        if (parts[0] && parts[1]) {
+            // Guardamos copia en heap para evitar problemas con string_split
+            dictionary_put(indice_archivos, parts[0], strdup(parts[1]));
+        }
+        string_iterate_lines(parts, (void*)free);
+        free(parts);
+    }
+    fclose(f);
+    log_info(logger, "T-009: Persistencia cargada. %d archivos recuperados.", dictionary_size(indice_archivos));
+}
+
 
 // ... (liberar_y_salir igual)
 void liberar_y_salir(int s)
@@ -42,9 +94,6 @@ int main(int argc, char *argv[])
 
 	config = config_create(ruta_config);
 
-	indice_archivos = dictionary_create();
-	// TODO: Cargar metadata.dat si existe (Persistencia)
-
 	if (config == NULL) {
 		log_error(logger, "No se pudo encontrar el archivo de configuracion: %s", ruta_config);
 		log_destroy(logger); // Evitar leak si falla inicio
@@ -69,6 +118,9 @@ int main(int argc, char *argv[])
 	log_info(logger, "[MAIN_MASTER] Iniciando estructuras necesarias...");
 
 	inicializar_estructuras_master();
+	
+	// T-009: Cargar persistencia después de inicializar estructuras
+	cargar_indice_desde_disco();
 
 	log_info(logger, "[MAIN_MASTER] Iniciando conexiones...");
 
@@ -214,8 +266,11 @@ void *iniciar_conexiones(void *socket_server)
             		destruir_paquete(ack);
             		free(ip_worker_str);
             
-            		// Reservar nombre en índice (Estado: SUBIENDO)
-            		dictionary_put(indice_archivos, nombre_archivo, "SUBIENDO");
+            		// T-009 FIX: Usamos strdup para consistencia de memoria (Heap vs Stack)
+            		dictionary_put(indice_archivos, nombre_archivo, strdup("SUBIENDO"));
+            		
+            		// Guardamos inmediatamente (Persistencia Sincrónica)
+            		guardar_indice_en_disco();
         		}
     		}
 

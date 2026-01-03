@@ -4,6 +4,7 @@ t_list *workers_conectados;
 t_list *cola_querys_ready;
 t_list *querys_exec;
 t_list *querys_exit;
+t_dictionary *indice_archivos; 
 
 sem_t sem_inicio_planificacion;
 sem_t sem_hay_querys;
@@ -55,6 +56,9 @@ void inicializar_estructuras_master()
     cola_querys_ready = list_create();
     querys_exec = list_create();
     querys_exit = list_create();
+    
+    // T-009: Inicialización centralizada
+    indice_archivos = dictionary_create();
 
     sem_init(&sem_hay_querys, 0, 0); // arranca en 0 (sin queries)
     sem_init(&sem_hay_workers, 0, 0);
@@ -70,6 +74,9 @@ void destruir_estructuras_master()
     list_destroy_and_destroy_elements(cola_querys_ready, destruir_query);
     list_destroy_and_destroy_elements(querys_exec, destruir_query);
     list_destroy_and_destroy_elements(querys_exit, destruir_query);
+    
+    // T-009 FIX: Limpieza profunda con free para evitar Memory Leaks
+    if(indice_archivos) dictionary_destroy_and_destroy_elements(indice_archivos, free);
 
     sem_destroy(&sem_hay_querys);
     sem_destroy(&sem_hay_workers);

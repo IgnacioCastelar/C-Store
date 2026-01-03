@@ -4,13 +4,19 @@
 #include<pthread.h>
 #include<semaphore.h>
 #include<commons/collections/list.h>
+#include<commons/collections/dictionary.h> 
 #include"planificador_querys.h"
 
+// --- VARIABLES GLOBALES (EXTERNAS) ---
 extern t_list *workers_conectados;
 extern t_list *cola_querys_ready;
 extern t_list *querys_exec;
 extern t_list *querys_exit;
 
+// PERSISTENCIA
+extern t_dictionary *indice_archivos;
+
+// Semáforos
 extern sem_t sem_inicio_planificacion;
 extern sem_t sem_hay_querys;
 extern sem_t sem_hay_workers;
